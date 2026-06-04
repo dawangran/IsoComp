@@ -93,3 +93,25 @@ def test_low_confidence_when_exon_chain_is_poor(bed12_path) -> None:
     assert score.final_score < 0.8
     assert assignment.status == "low_confidence"
 
+
+def test_assignment_score_does_not_penalize_truncated_but_compatible_read(bed12_path) -> None:
+    transcript = read_bed12(bed12_path)["Tpos"]
+    read = ReadAlignment(
+        read_id="trunc_5p",
+        chrom="chr1",
+        genomic_start=150,
+        genomic_end=400,
+        blocks=[(150, 200), (300, 400)],
+        junctions=[(200, 300)],
+        aligned_length=150,
+        mapq=60,
+        cigar="50M100N100M",
+        is_reverse=False,
+    )
+
+    score = score_candidate(read, transcript)
+    assignment = assign_read(read, [CandidateHit(transcript, 150)])
+
+    assert score.coverage_fraction == 0.75
+    assert score.final_score == 1.0
+    assert assignment.status == "unique"

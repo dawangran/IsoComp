@@ -1,13 +1,34 @@
 # IsoComp
 
 IsoComp is a read-centric isoform completeness QC tool for long-read RNA sequencing.
-It assigns each genome-aligned read to its best supported transcript model, projects
-the read into transcript coordinates, and reports 5' completeness, 3' completeness,
-coverage fraction, and transcript-normalized body coverage.
+It assigns each genome-aligned read to its best-supported annotated transcript
+model, projects the read into transcript coordinates, and reports 5' completeness,
+3' completeness, coverage fraction, and transcript-normalized body coverage.
 
 IsoComp intentionally avoids the RSeQC-style strategy of scanning every annotated
-transcript model and querying BAM coverage. All v0.1 metrics come from reads that
-are assigned and projected in transcript coordinates.
+transcript model and querying BAM coverage. Its core metrics come from reads that
+are assigned and projected in transcript coordinates, which reduces annotation
+redundancy from non-expressed isoforms, shared exons, and overlapping transcript
+models.
+
+## Design Rationale
+
+Traditional gene body coverage summarizes a metatranscript signal:
+
+```text
+annotation transcript models -> percentile genomic positions -> BAM coverage
+```
+
+IsoComp instead evaluates completeness from the read's perspective:
+
+```text
+read -> candidate transcripts -> best-supported transcript -> transcript coordinates
+```
+
+Assignment and completeness are deliberately separated. The assignment score asks
+whether a read is compatible with an annotated transcript model. Completeness
+metrics then ask how much of that selected transcript the read covers and whether
+the projected read reaches the annotated 5' and 3' transcript ends.
 
 ## Install
 
@@ -69,14 +90,25 @@ raw `coverage`, `mean_normalized_coverage`, and `max_normalized_coverage`.
 
 The plots directory contains:
 
-- `transcript_body_coverage.png`: aggregate line plot using max-normalized coverage
-  on a fixed 0-1 y-axis.
-- `transcript_body_heatmap.png`: transcript-by-bin heatmap for transcripts with at
-  least one unique read; each row is mean-normalized and the display is capped at
-  the 200 most-covered transcripts.
-- `read_body_heatmap.png`: read-by-bin heatmap for unique reads; each row shows
-  the covered fraction of bins in that read's assigned transcript coordinates and
-  the display is capped at 500 reads.
+- `transcript_body_coverage.png` / `.pdf`: aggregate assigned-read coverage curve
+  using max-normalized coverage on a fixed 0-1 y-axis.
+- `transcript_body_heatmap.png` / `.pdf`: transcript-by-bin heatmap for transcripts
+  with at least one unique read; each row is mean-normalized and the display is
+  capped at the 200 most-covered transcripts.
+- `read_body_heatmap.png` / `.pdf`: read-by-bin heatmap for unique reads; each row
+  shows the covered fraction of bins in that read's assigned transcript coordinates
+  and the display is capped at 500 reads.
+- `read_coverage_fraction.png` / `.pdf`: unique-read transcript coverage fraction
+  distribution with the median marked.
+- `dist_to_5p.png` / `.pdf`: distance from projected read start to the transcript
+  5' end.
+- `dist_to_3p.png` / `.pdf`: distance from projected read end to the transcript
+  3' end.
+- `full_length_fraction.png` / `.pdf`: 5' complete, 3' complete, and full-length-like
+  fractions among uniquely assigned reads.
+
+PNG figures are written at 300 dpi. PDF copies are generated alongside them for
+journal workflows that prefer vector text and editable figure panels.
 
 ## Assignment Defaults
 
@@ -84,8 +116,12 @@ Candidate transcripts are looked up through a chromosome-wise interval index. Ea
 candidate is scored as:
 
 ```text
-0.50 * exon_overlap_score + 0.30 * junction_score + 0.20 * coverage_fraction
+0.65 * exon_overlap_score + 0.35 * junction_score
 ```
+
+`coverage_fraction`, `dist_to_5p`, and `dist_to_3p` are computed after projection
+and reported as completeness metrics. They do not lower the assignment score for
+biologically plausible truncated reads.
 
 Statuses:
 
