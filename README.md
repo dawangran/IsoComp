@@ -103,3 +103,7 @@ pytest
 
 The tests use tiny synthetic BED12/BAM fixtures and do not require real sequencing
 data.
+
+## License
+
+IsoComp is released under the MIT License. See `LICENSE` for details.
