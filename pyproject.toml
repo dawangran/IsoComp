@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isocomp"
+version = "0.1.0"
+description = "Read-centric isoform completeness assessment for long-read RNA sequencing"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "IsoComp contributors" }
+]
+keywords = ["RNA-seq", "long-read", "isoform", "quality-control", "transcriptomics"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+  "pysam>=0.22",
+  "numpy>=1.23",
+  "pandas>=2.0",
+  "intervaltree>=3.1",
+  "matplotlib>=3.7",
+  "typer>=0.9",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.4",
+]
+
+[project.scripts]
+isocomp = "isocomp.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["isocomp*"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+

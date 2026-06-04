@@ -1,0 +1,218 @@
+"""Command-line entry point for IsoComp."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Annotated
+
+import pandas as pd
+import typer
+
+from . import __version__
+from .annotation import AnnotationError, read_bed12
+from .assigner import assign_read
+from .bam_parser import BamParserError, iter_read_alignments
+from .candidate import CandidateIndex
+from .io import (
+    OutputError,
+    ensure_outputs_available,
+    output_paths,
+    write_dataframe,
+    write_json,
+    write_read_assignment,
+    write_transcript_body_coverage,
+)
+from .metrics import (
+    build_read_metrics,
+    compute_transcript_body_coverage,
+    summarize_sample,
+    summarize_transcripts,
+    update_summary_for_metric,
+)
+from .models import RunSummary
+
+app = typer.Typer(add_completion=False, help="Read-centric isoform completeness QC.")
+LOGGER = logging.getLogger("isocomp")
+
+
+@app.callback(invoke_without_command=True)
+def run(
+    ctx: typer.Context,
+    bam: Annotated[Path | None, typer.Option("--bam", help="Genome-aligned long-read RNA BAM.")] = None,
+    annotation: Annotated[Path | None, typer.Option("--annotation", help="BED12 transcript annotation.")] = None,
+    out: Annotated[str | None, typer.Option("--out", help="Output prefix.")] = None,
+    bin_num: Annotated[int, typer.Option("--bin-num", min=1, help="Number of transcript body bins.")] = 100,
+    min_mapq: Annotated[int, typer.Option("--min-mapq", min=0, help="Minimum mapping quality.")] = 20,
+    tss_tol: Annotated[int, typer.Option("--tss-tol", min=0, help="5' completeness tolerance in bp.")] = 100,
+    tes_tol: Annotated[int, typer.Option("--tes-tol", min=0, help="3' completeness tolerance in bp.")] = 100,
+    min_overlap: Annotated[int, typer.Option("--min-overlap", min=1, help="Minimum exonic overlap in bp.")] = 50,
+    junction_tol: Annotated[int, typer.Option("--junction-tol", min=0, help="Splice-site tolerance in bp.")] = 5,
+    strandness: Annotated[
+        str,
+        typer.Option("--strandness", help="One of unstranded, forward, reverse, auto."),
+    ] = "unstranded",
+    threads: Annotated[int, typer.Option("--threads", min=1, help="BAM decompression/read threads.")] = 1,
+    log_level: Annotated[
+        str,
+        typer.Option("--log-level", help="One of DEBUG, INFO, WARNING, ERROR."),
+    ] = "INFO",
+    force: Annotated[bool, typer.Option("--force", help="Overwrite existing outputs.")] = False,
+    version: Annotated[bool, typer.Option("--version", help="Show version and exit.")] = False,
+) -> None:
+    if version:
+        typer.echo(__version__)
+        raise typer.Exit()
+    if ctx.invoked_subcommand is not None:
+        return
+    if bam is None or annotation is None or out is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(code=2)
+
+    try:
+        configure_logging(log_level)
+        run_pipeline(
+            bam=bam,
+            annotation=annotation,
+            out=out,
+            bin_num=bin_num,
+            min_mapq=min_mapq,
+            tss_tol=tss_tol,
+            tes_tol=tes_tol,
+            min_overlap=min_overlap,
+            junction_tol=junction_tol,
+            strandness=strandness,
+            threads=threads,
+            force=force,
+        )
+    except (AnnotationError, BamParserError, OutputError, FileNotFoundError, ValueError) as exc:
+        LOGGER.error("%s", exc)
+        raise typer.Exit(code=1) from exc
+
+
+def run_pipeline(
+    *,
+    bam: Path,
+    annotation: Path,
+    out: str,
+    bin_num: int,
+    min_mapq: int,
+    tss_tol: int,
+    tes_tol: int,
+    min_overlap: int,
+    junction_tol: int,
+    strandness: str,
+    threads: int,
+    force: bool,
+) -> None:
+    if strandness not in {"unstranded", "forward", "reverse", "auto"}:
+        raise ValueError(
+            "Invalid --strandness. Expected one of unstranded, forward, reverse, auto; "
+            f"got {strandness!r}"
+        )
+
+    paths = output_paths(out)
+    ensure_outputs_available(paths, force=force)
+    LOGGER.info("Reading annotation: %s", annotation)
+    transcripts = read_bed12(annotation)
+    LOGGER.info("Loaded %d transcripts", len(transcripts))
+    candidate_index = CandidateIndex(transcripts)
+
+    read_iter, filter_stats = iter_read_alignments(
+        bam,
+        min_mapq=min_mapq,
+        threads=threads,
+    )
+    summary = RunSummary()
+    read_metrics = []
+    assignments = []
+
+    LOGGER.info("Streaming BAM: %s", bam)
+    for read in read_iter:
+        candidates = candidate_index.query(
+            read,
+            min_overlap=min_overlap,
+            strandness=strandness,
+        )
+        assignment = assign_read(read, candidates, junction_tol=junction_tol)
+        metric = build_read_metrics(
+            read,
+            assignment,
+            tss_tol=tss_tol,
+            tes_tol=tes_tol,
+        )
+        update_summary_for_metric(summary, metric)
+        assignments.append(assignment)
+        read_metrics.append(metric)
+
+    summary.total_reads = filter_stats.total_reads
+    summary.mapped_reads = filter_stats.mapped_reads
+    summary.primary_reads = filter_stats.primary_reads
+    summary.duplicate_reads = filter_stats.duplicate_reads
+    summary.low_mapq_reads = filter_stats.low_mapq_reads
+    summary.usable_reads = filter_stats.usable_reads
+
+    LOGGER.info("Parsed %d usable reads", summary.usable_reads)
+    aggregate_coverage, per_transcript_coverage = compute_transcript_body_coverage(
+        transcripts,
+        assignments,
+        bin_num=bin_num,
+    )
+    transcript_rows = summarize_transcripts(transcripts, read_metrics, per_transcript_coverage)
+    sample_row = summarize_sample(read_metrics, summary, sample_name=Path(out).name)
+
+    write_read_assignment(paths["read_assignment"], read_metrics)
+    write_dataframe(paths["transcript_metrics"], pd.DataFrame(transcript_rows))
+    write_dataframe(paths["sample_summary"], pd.DataFrame([sample_row]))
+    write_transcript_body_coverage(paths["transcript_body_coverage"], aggregate_coverage)
+    write_json(
+        paths["assignment_stats"],
+        {
+            "version": __version__,
+            "parameters": {
+                "bam": str(bam),
+                "annotation": str(annotation),
+                "out": out,
+                "bin_num": bin_num,
+                "min_mapq": min_mapq,
+                "tss_tol": tss_tol,
+                "tes_tol": tes_tol,
+                "min_overlap": min_overlap,
+                "junction_tol": junction_tol,
+                "strandness": strandness,
+                "threads": threads,
+            },
+            "counts": sample_row,
+        },
+    )
+    from .plots import write_plots
+
+    write_plots(
+        paths["plots_dir"],
+        read_metrics,
+        aggregate_coverage,
+        per_transcript_coverage=per_transcript_coverage,
+        assignments=assignments,
+    )
+    LOGGER.info("IsoComp completed: %s", out)
+
+
+def configure_logging(log_level: str) -> None:
+    normalized = log_level.upper()
+    if normalized not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
+        raise ValueError(
+            "Invalid --log-level. Expected one of DEBUG, INFO, WARNING, ERROR; "
+            f"got {log_level!r}"
+        )
+    logging.basicConfig(
+        level=getattr(logging, normalized),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def main() -> None:
+    app()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.coverage
+dist/
+build/
+*.egg-info/
+*.bam
+*.bai
+*.isocomp.read_assignment.tsv
+*.isocomp.transcript_metrics.tsv
+*.isocomp.sample_summary.tsv
+*.isocomp.transcript_body_coverage.tsv
+*.isocomp.assignment_stats.json
+*.isocomp.plots/
