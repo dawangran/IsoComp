@@ -115,6 +115,7 @@ def _plot_body_coverage(path: Path, coverage: np.ndarray) -> None:
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 1.05)
     ax.set_xticks([0, 25, 50, 75, 100])
+    ax.set_xticklabels(["5' end", "25", "50", "75", "3' end"])
     ax.set_yticks([0, 0.25, 0.50, 0.75, 1.00])
     _style_axis(ax, grid_axis="y")
     _save_figure(fig, path)
@@ -168,7 +169,7 @@ def _plot_transcript_body_heatmap(
     ax.set_xlabel("Transcript position (5' to 3', %)")
     ax.set_ylabel("Transcript")
     ax.set_xticks(_bin_axis_ticks(bin_num))
-    ax.set_xticklabels(_bin_axis_tick_labels(bin_num))
+    ax.set_xticklabels(_terminal_axis_tick_labels(bin_num))
     _style_axis(ax)
     _save_figure(fig, path)
 
@@ -180,28 +181,33 @@ def _plot_read_body_heatmap(
     bin_num: int,
     max_rows: int = 500,
 ) -> None:
-    rows: list[tuple[str, str, int, int, np.ndarray]] = []
+    rows: list[tuple[str, str, float, float, np.ndarray]] = []
     for assignment in assignments:
         if assignment.status != "unique" or assignment.transcript is None or assignment.projection is None:
             continue
         projection = assignment.projection
         if projection.read_start_tx is None or projection.read_end_tx is None:
             continue
+        transcript_length = assignment.transcript.transcript_length
+        if transcript_length <= 0:
+            continue
         row = np.zeros(bin_num, dtype=float)
         for interval in projection.intervals:
-            _add_interval_to_bins(row, interval, assignment.transcript.transcript_length)
+            _add_interval_to_bins(row, interval, transcript_length)
+        start_fraction = projection.read_start_tx / transcript_length
+        dist_3p_fraction = (transcript_length - projection.read_end_tx) / transcript_length
         rows.append(
             (
                 assignment.read_id,
                 assignment.transcript.transcript_id,
-                projection.read_start_tx,
-                projection.read_end_tx,
+                start_fraction,
+                dist_3p_fraction,
                 row,
             )
         )
 
     rows.sort(key=lambda item: (item[2], item[3], item[1], item[0]))
-    rows = rows[:max_rows]
+    rows = _evenly_downsample_rows(rows, max_rows)
 
     fig, ax = plt.subplots(figsize=(4.8, max(2.8, min(7.2, 0.035 * len(rows) + 2.2))))
     if rows:
@@ -235,9 +241,9 @@ def _plot_read_body_heatmap(
         _empty_panel(ax, "No uniquely assigned reads")
 
     ax.set_xlabel("Transcript position (5' to 3', %)")
-    ax.set_ylabel("Read")
+    ax.set_ylabel("Unique reads sorted by 5'/3' distance")
     ax.set_xticks(_bin_axis_ticks(bin_num))
-    ax.set_xticklabels(_bin_axis_tick_labels(bin_num))
+    ax.set_xticklabels(_terminal_axis_tick_labels(bin_num))
     _style_axis(ax)
     _save_figure(fig, path)
 
@@ -408,10 +414,22 @@ def _bin_axis_ticks(bin_num: int) -> list[int]:
     return [0, bin_num // 4, bin_num // 2, (3 * bin_num) // 4, bin_num - 1]
 
 
-def _bin_axis_tick_labels(bin_num: int) -> list[str]:
+def _terminal_axis_tick_labels(bin_num: int) -> list[str]:
     if bin_num <= 1:
-        return ["0"]
-    return ["0", "25", "50", "75", "100"]
+        return ["5' end"]
+    return ["5' end", "25", "50", "75", "3' end"]
+
+
+def _evenly_downsample_rows(
+    rows: list[tuple[str, str, float, float, np.ndarray]],
+    max_rows: int,
+) -> list[tuple[str, str, float, float, np.ndarray]]:
+    if max_rows <= 0:
+        return []
+    if len(rows) <= max_rows:
+        return rows
+    indexes = np.linspace(0, len(rows) - 1, num=max_rows, dtype=int)
+    return [rows[int(index)] for index in indexes]
 
 
 def _infer_bin_num(per_transcript_coverage: dict[str, np.ndarray]) -> int:

@@ -97,7 +97,8 @@ The plots directory contains:
   capped at the 200 most-covered transcripts.
 - `read_body_heatmap.png` / `.pdf`: read-by-bin heatmap for unique reads; each row
   shows the covered fraction of bins in that read's assigned transcript coordinates
-  and the display is capped at 500 reads.
+  sorted by normalized 5' distance and then normalized 3' distance. Runs with more
+  than 500 unique reads are evenly downsampled after sorting.
 - `read_coverage_fraction.png` / `.pdf`: unique-read transcript coverage fraction
   distribution with the median marked.
 - `dist_to_5p.png` / `.pdf`: distance from projected read start to the transcript
