@@ -33,3 +33,16 @@ def test_negative_projection_is_oriented_5p_to_3p() -> None:
     assert projection.dist_to_5p == 0
     assert projection.dist_to_3p == 0
 
+
+def test_negative_projection_distinguishes_5p_and_3p_truncation() -> None:
+    transcript = parse_bed12_line("chr2\t100\t400\tTneg\t0\t-\t100\t400\t0\t2\t100,100\t0,200")
+
+    five_prime_projection = project_blocks_to_transcript([(350, 400)], transcript)
+    three_prime_projection = project_blocks_to_transcript([(100, 150)], transcript)
+
+    assert five_prime_projection.intervals == [(0, 50)]
+    assert five_prime_projection.dist_to_5p == 0
+    assert five_prime_projection.dist_to_3p == 150
+    assert three_prime_projection.intervals == [(150, 200)]
+    assert three_prime_projection.dist_to_5p == 150
+    assert three_prime_projection.dist_to_3p == 0
