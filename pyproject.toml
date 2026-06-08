@@ -7,7 +7,7 @@ name = "isocomp"
 version = "0.1.0"
 description = "Read-centric isoform completeness assessment for long-read RNA sequencing"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.8"
 license = { text = "MIT" }
 authors = [
   { name = "IsoComp contributors" }
