@@ -9,6 +9,9 @@ from .models import AssignmentResult, ProjectionResult, ReadAlignment, Transcrip
 from .projection import project_blocks_to_transcript
 from .utils import harmonic_mean, safe_divide, total_overlap_length
 
+EXON_OVERLAP_WEIGHT = 0.65
+JUNCTION_WEIGHT = 0.35
+
 
 @dataclass(frozen=True)
 class CandidateScore:
@@ -103,9 +106,8 @@ def score_candidate(
     ) = score_junctions(read, transcript, junction_tol=junction_tol)
     junction_score = harmonic_mean(junction_precision, junction_recall)
     final_score = (
-        0.50 * exon_overlap_score
-        + 0.30 * junction_score
-        + 0.20 * projection.coverage_fraction
+        EXON_OVERLAP_WEIGHT * exon_overlap_score
+        + JUNCTION_WEIGHT * junction_score
     )
     return CandidateScore(
         transcript=transcript,

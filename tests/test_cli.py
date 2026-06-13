@@ -60,6 +60,7 @@ def test_cli_pipeline_smoke(tmp_path: Path, bed12_path: Path, synthetic_bam: Pat
         "full_length_fraction.png",
     ]:
         assert (plots_dir / plot_name).exists()
+        assert (plots_dir / plot_name).with_suffix(".pdf").exists()
 
     reads = pd.read_csv(read_assignment, sep="\t")
     summary = pd.read_csv(sample_summary, sep="\t").iloc[0].to_dict()
