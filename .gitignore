@@ -6,6 +6,8 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+benchmark_runs/
+example_runs/
 *.bam
 *.bai
 *.isocomp.read_assignment.tsv

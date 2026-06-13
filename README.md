@@ -1,5 +1,7 @@
 # IsoComp
 
+[![CI](https://github.com/dawangran/IsoComp/actions/workflows/ci.yml/badge.svg)](https://github.com/dawangran/IsoComp/actions/workflows/ci.yml)
+
 IsoComp is a read-centric isoform completeness QC tool for long-read RNA sequencing.
 It assigns each genome-aligned read to its best supported transcript model, projects
 the read into transcript coordinates, and reports 5' completeness, 3' completeness,
@@ -11,11 +13,31 @@ are assigned and projected in transcript coordinates.
 
 ## Install
 
+From a local checkout:
+
 ```bash
 python -m pip install -e ".[test]"
 ```
 
 IsoComp requires Python 3.10 or newer.
+
+After installation, check that the command-line entry point is available:
+
+```bash
+isocomp --version
+pytest
+```
+
+For manuscript review and release validation, a no-download synthetic example is
+available:
+
+```bash
+bash scripts/run_synthetic_example.sh example_runs/synthetic_example
+```
+
+This command generates a small BED12/BAM truth set, runs IsoComp, and writes a
+complete set of read-level, transcript-level, sample-level, coverage, JSON, and
+plot outputs.
 
 ## Minimal Run
 
@@ -69,8 +91,8 @@ raw `coverage`, `mean_normalized_coverage`, and `max_normalized_coverage`.
 
 The plots directory contains:
 
-- `transcript_body_coverage.png`: aggregate line plot using max-normalized coverage
-  on a fixed 0-1 y-axis.
+- `transcript_body_coverage.png`: aggregate line plot using max-normalized
+  coverage on a fixed 0-1 y-axis.
 - `transcript_body_heatmap.png`: transcript-by-bin heatmap for transcripts with at
   least one unique read; each row is mean-normalized and the display is capped at
   the 200 most-covered transcripts.
@@ -103,6 +125,22 @@ pytest
 
 The tests use tiny synthetic BED12/BAM fixtures and do not require real sequencing
 data.
+
+## Reproducibility Assets
+
+- `benchmarks/generate_synthetic_data.py` creates sorted/indexed synthetic BAM
+  files, complete and expressed-only BED12 annotations, truth labels, and example
+  IsoComp/RSeQC commands.
+- `benchmarks/synthetic_truth_benchmark.py` runs IsoComp synthetic truth
+  evaluation, parameter sensitivity analysis, and RSeQC-style profile comparison.
+- `scripts/run_synthetic_example.sh` is the recommended one-command smoke test
+  for users and reviewers.
+- `docs/software_availability.md` contains the release checklist and manuscript
+  Availability text template.
+
+For a release intended for publication, archive the exact source release and
+synthetic test data on Zenodo, Figshare, or Software Heritage and cite the DOI in
+the manuscript Availability section.
 
 ## License
 

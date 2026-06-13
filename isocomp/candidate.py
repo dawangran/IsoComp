@@ -4,7 +4,44 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from intervaltree import IntervalTree
+try:
+    from intervaltree import IntervalTree
+except ModuleNotFoundError:
+    @dataclass(frozen=True)
+    class _FallbackInterval:
+        begin: int
+        end: int
+        data: object
+
+        def __lt__(self, other: object) -> bool:
+            if not isinstance(other, _FallbackInterval):
+                return NotImplemented
+            return (self.begin, self.end, repr(self.data)) < (
+                other.begin,
+                other.end,
+                repr(other.data),
+            )
+
+    class IntervalTree:  # type: ignore[no-redef]
+        """Small fallback used when intervaltree is unavailable.
+
+        The real dependency is preferred for production-size annotations. This
+        linear fallback keeps tiny synthetic tests and examples runnable in
+        minimal environments.
+        """
+
+        def __init__(self) -> None:
+            self._intervals: list[_FallbackInterval] = []
+
+        def addi(self, start: int, end: int, data: object) -> None:
+            self._intervals.append(_FallbackInterval(start, end, data))
+
+        def overlap(self, start: int, end: int) -> list[_FallbackInterval]:
+            return [
+                interval
+                for interval in self._intervals
+                if interval.begin < end and start < interval.end
+            ]
 
 from .models import ReadAlignment, Transcript
 from .utils import total_overlap_length
@@ -63,4 +100,3 @@ def _strand_compatible(read: ReadAlignment, transcript: Transcript, strandness: 
             f"got {strandness!r}"
         )
     return read_strand == transcript.strand
-
