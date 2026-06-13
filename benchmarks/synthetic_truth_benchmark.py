@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -77,6 +78,7 @@ def main() -> None:
     args = parse_args()
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    configure_plot_cache(out_dir)
 
     transcripts = build_transcripts()
     read_specs = build_read_specs(transcripts, replicates=args.replicates)
@@ -138,6 +140,25 @@ def main() -> None:
         plot_coverage_profiles(
             coverage_profiles,
             out_dir / "rseqc_style_coverage_profiles.png",
+            normalization=args.profile_normalization,
+        )
+        write_article_panel_outputs(
+            default_metrics=default_metrics,
+            sensitivity_summary=sensitivity_summary,
+            coverage_profiles=coverage_profiles,
+            coverage_metrics=coverage_metrics,
+            out_dir=out_dir,
+            normalization=args.profile_normalization,
+        )
+    else:
+        write_article_panel_outputs(
+            default_metrics=default_metrics,
+            sensitivity_summary=sensitivity_summary,
+            coverage_profiles=coverage_profiles,
+            coverage_metrics=coverage_metrics,
+            out_dir=out_dir,
+            normalization=args.profile_normalization,
+            write_plots=False,
         )
 
     print(f"Wrote synthetic benchmark to {out_dir}")
@@ -225,6 +246,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip PNG plot generation.",
     )
+    parser.add_argument(
+        "--profile-normalization",
+        choices=["max", "mean"],
+        default="max",
+        help="Normalization used for manuscript coverage profile plots.",
+    )
     return parser.parse_args()
 
 
@@ -234,6 +261,16 @@ def int_list(value: str) -> list[int]:
 
 def float_list(value: str) -> list[float]:
     return [float(item) for item in value.split(",") if item]
+
+
+def configure_plot_cache(out_dir: Path) -> None:
+    cache_dir = out_dir / ".plot-cache"
+    matplotlib_cache = cache_dir / "matplotlib"
+    xdg_cache = cache_dir / "xdg"
+    matplotlib_cache.mkdir(parents=True, exist_ok=True)
+    xdg_cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("MPLCONFIGDIR", str(matplotlib_cache))
+    os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache))
 
 
 def build_transcripts() -> dict[str, Transcript]:
@@ -309,6 +346,53 @@ def build_transcripts() -> dict[str, Transcript]:
         )
         for spec in specs
     }
+
+
+def build_redundant_transcripts(
+    transcripts: dict[str, Transcript],
+) -> dict[str, Transcript]:
+    specs = [
+        TranscriptSpec(
+            "TX_POS_MAIN_REDUNDANT_DUP",
+            "chrSyn",
+            "+",
+            ((1000, 1100), (1300, 1400), (1600, 1700)),
+        ),
+        TranscriptSpec(
+            "TX_POS_MAIN_REDUNDANT_5P_SHORT",
+            "chrSyn",
+            "+",
+            ((1040, 1100), (1300, 1400), (1600, 1700)),
+        ),
+        TranscriptSpec(
+            "TX_POS_SHARED_EXON_DECOY",
+            "chrSyn",
+            "+",
+            ((1000, 1100), (1300, 1400)),
+        ),
+        TranscriptSpec(
+            "TX_NEG_MAIN_REDUNDANT_DUP",
+            "chrSyn",
+            "-",
+            ((4000, 4100), (4300, 4400), (4600, 4700)),
+        ),
+        TranscriptSpec(
+            "TX_LONG_INTERNAL_DECOY",
+            "chrSyn",
+            "+",
+            ((7500, 7800), (8100, 8500)),
+        ),
+    ]
+    redundant = dict(transcripts)
+    for spec in specs:
+        redundant[spec.transcript_id] = Transcript(
+            transcript_id=spec.transcript_id,
+            gene_id=None,
+            chrom=spec.chrom,
+            strand=spec.strand,
+            exons=list(spec.exons),
+        )
+    return redundant
 
 
 def build_read_specs(transcripts: dict[str, Transcript], *, replicates: int) -> list[ReadSpec]:
@@ -898,8 +982,10 @@ def compute_coverage_profiles(
         "isocomp_unique_assignment": [0.0] * bin_num,
         "rseqc_complete_annotation": [0.0] * bin_num,
         "rseqc_truth_expressed_annotation": [0.0] * bin_num,
+        "rseqc_redundant_annotation": [0.0] * bin_num,
     }
     projection_counts = {name: 0 for name in truth_profiles}
+    redundant_transcripts = build_redundant_transcripts(transcripts)
 
     truth_unique = truth.loc[truth["truth_status"] == "unique"]
     for row in truth_unique.itertuples(index=False):
@@ -956,24 +1042,38 @@ def compute_coverage_profiles(
                 transcript,
             ):
                 projection_counts["rseqc_truth_expressed_annotation"] += 1
+        for transcript in redundant_transcripts.values():
+            if add_projected_read_to_profile(
+                truth_profiles["rseqc_redundant_annotation"],
+                read,
+                transcript,
+            ):
+                projection_counts["rseqc_redundant_annotation"] += 1
 
     profile_rows: list[dict[str, Any]] = []
-    normalized = {
+    mean_normalized = {
         name: mean_normalize(values)
+        for name, values in truth_profiles.items()
+    }
+    max_normalized = {
+        name: max_normalize(values)
         for name, values in truth_profiles.items()
     }
     for index in range(bin_num):
         row: dict[str, Any] = {"bin": index + 1}
         for name, values in truth_profiles.items():
             row[f"{name}_raw"] = values[index]
-            row[f"{name}_mean_normalized"] = normalized[name][index]
+            row[f"{name}_mean_normalized"] = mean_normalized[name][index]
+            row[f"{name}_max_normalized"] = max_normalized[name][index]
         profile_rows.append(row)
 
-    truth_normalized = normalized["truth_read_centric"]
+    truth_mean_normalized = mean_normalized["truth_read_centric"]
+    truth_max_normalized = max_normalized["truth_read_centric"]
     truth_raw = truth_profiles["truth_read_centric"]
     metrics_rows = []
     for name, values in truth_profiles.items():
-        values_normalized = normalized[name]
+        values_mean_normalized = mean_normalized[name]
+        values_max_normalized = max_normalized[name]
         metrics_rows.append(
             {
                 "profile": name,
@@ -981,28 +1081,54 @@ def compute_coverage_profiles(
                 "total_coverage": sum(values),
                 "total_coverage_ratio_vs_truth": safe_divide(sum(values), sum(truth_raw)),
                 "mae_mean_normalized_vs_truth": mean_absolute_error(
-                    values_normalized,
-                    truth_normalized,
+                    values_mean_normalized,
+                    truth_mean_normalized,
                 ),
                 "rmse_mean_normalized_vs_truth": root_mean_squared_error(
-                    values_normalized,
-                    truth_normalized,
+                    values_mean_normalized,
+                    truth_mean_normalized,
                 ),
                 "pearson_mean_normalized_vs_truth": pearson_correlation(
-                    values_normalized,
-                    truth_normalized,
+                    values_mean_normalized,
+                    truth_mean_normalized,
                 ),
-                "first_decile_mean_normalized": decile_mean(values_normalized, 0),
-                "last_decile_mean_normalized": decile_mean(values_normalized, 9),
+                "mae_max_normalized_vs_truth": mean_absolute_error(
+                    values_max_normalized,
+                    truth_max_normalized,
+                ),
+                "rmse_max_normalized_vs_truth": root_mean_squared_error(
+                    values_max_normalized,
+                    truth_max_normalized,
+                ),
+                "pearson_max_normalized_vs_truth": pearson_correlation(
+                    values_max_normalized,
+                    truth_max_normalized,
+                ),
+                "first_decile_mean_normalized": decile_mean(
+                    values_mean_normalized,
+                    0,
+                ),
+                "last_decile_mean_normalized": decile_mean(
+                    values_mean_normalized,
+                    9,
+                ),
                 "first_to_last_decile_ratio": safe_divide(
-                    decile_mean(values_normalized, 0),
-                    decile_mean(values_normalized, 9),
+                    decile_mean(values_mean_normalized, 0),
+                    decile_mean(values_mean_normalized, 9),
+                ),
+                "first_decile_max_normalized": decile_mean(values_max_normalized, 0),
+                "last_decile_max_normalized": decile_mean(values_max_normalized, 9),
+                "first_to_last_decile_ratio_max_normalized": safe_divide(
+                    decile_mean(values_max_normalized, 0),
+                    decile_mean(values_max_normalized, 9),
                 ),
                 "transcript_models_scanned": (
                     len(transcripts)
                     if name == "rseqc_complete_annotation"
                     else len(truth_expressed_models)
                     if name == "rseqc_truth_expressed_annotation"
+                    else len(redundant_transcripts)
+                    if name == "rseqc_redundant_annotation"
                     else math.nan
                 ),
             }
@@ -1051,6 +1177,13 @@ def mean_normalize(values: list[float]) -> list[float]:
     if mean_value <= 0:
         return [0.0 for _ in values]
     return [value / mean_value for value in values]
+
+
+def max_normalize(values: list[float]) -> list[float]:
+    max_value = max(values) if values else 0.0
+    if max_value <= 0:
+        return [0.0 for _ in values]
+    return [value / max_value for value in values]
 
 
 def mean_absolute_error(values: list[float], truth_values: list[float]) -> float:
@@ -1140,15 +1273,15 @@ def plot_sensitivity_f1(summary: pd.DataFrame, path: Path) -> None:
     if data.empty:
         return
     grouped = (
-        data.groupby(["terminal_tolerance", "coverage_threshold"], as_index=False)
+        data.groupby(["tss_tol", "coverage_threshold"], as_index=False)
         .agg(full_length_f1=("full_length_f1", "mean"))
-        .sort_values(["coverage_threshold", "terminal_tolerance"])
+        .sort_values(["coverage_threshold", "tss_tol"])
     )
 
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
     for coverage_threshold, subset in grouped.groupby("coverage_threshold"):
         ax.plot(
-            subset["terminal_tolerance"],
+            subset["tss_tol"],
             subset["full_length_f1"],
             marker="o",
             label=f"coverage >= {coverage_threshold:g}",
@@ -1163,7 +1296,12 @@ def plot_sensitivity_f1(summary: pd.DataFrame, path: Path) -> None:
     plt.close(fig)
 
 
-def plot_coverage_profiles(profiles: pd.DataFrame, path: Path) -> None:
+def plot_coverage_profiles(
+    profiles: pd.DataFrame,
+    path: Path,
+    *,
+    normalization: str = "max",
+) -> None:
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -1173,18 +1311,20 @@ def plot_coverage_profiles(profiles: pd.DataFrame, path: Path) -> None:
     profile_names = [
         "truth_read_centric",
         "isocomp_unique_assignment",
-        "rseqc_complete_annotation",
         "rseqc_truth_expressed_annotation",
+        "rseqc_complete_annotation",
+        "rseqc_redundant_annotation",
     ]
     labels = {
         "truth_read_centric": "Truth read-centric",
         "isocomp_unique_assignment": "IsoComp unique assignments",
+        "rseqc_truth_expressed_annotation": "RSeQC-style expressed-only annotation",
         "rseqc_complete_annotation": "RSeQC-style complete annotation",
-        "rseqc_truth_expressed_annotation": "RSeQC-style truth-expressed annotation",
+        "rseqc_redundant_annotation": "RSeQC-style redundant annotation",
     }
     fig, ax = plt.subplots(figsize=(8.0, 4.8))
     for profile_name in profile_names:
-        column = f"{profile_name}_mean_normalized"
+        column = f"{profile_name}_{normalization}_normalized"
         ax.plot(
             profiles["bin"],
             profiles[column],
@@ -1192,9 +1332,345 @@ def plot_coverage_profiles(profiles: pd.DataFrame, path: Path) -> None:
             label=labels[profile_name],
         )
     ax.set_xlabel("Transcript body bin, 5' to 3'")
-    ax.set_ylabel("Mean-normalized coverage")
+    ax.set_ylabel(f"{normalization.capitalize()}-normalized coverage")
     ax.set_title("Synthetic IsoComp vs RSeQC-style coverage profiles")
     ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def write_article_panel_outputs(
+    *,
+    default_metrics: pd.DataFrame,
+    sensitivity_summary: pd.DataFrame,
+    coverage_profiles: pd.DataFrame,
+    coverage_metrics: pd.DataFrame,
+    out_dir: Path,
+    normalization: str,
+    write_plots: bool = True,
+) -> None:
+    truth_metrics = article_truth_metrics(default_metrics)
+    truth_metrics.to_csv(
+        out_dir / "figure1a_isocomp_truth_metrics.tsv",
+        sep="\t",
+        index=False,
+    )
+
+    sensitivity_panel = article_sensitivity_panel(sensitivity_summary)
+    sensitivity_panel.to_csv(
+        out_dir / "figure1c_parameter_sensitivity.tsv",
+        sep="\t",
+        index=False,
+    )
+
+    profile_panel = article_annotation_dependence_profiles(
+        coverage_profiles,
+        normalization=normalization,
+    )
+    profile_panel.to_csv(
+        out_dir / "figure1b_rseqc_style_annotation_dependence_profiles.tsv",
+        sep="\t",
+        index=False,
+    )
+
+    metrics_panel = article_annotation_dependence_metrics(
+        coverage_metrics,
+        normalization=normalization,
+    )
+    metrics_panel.to_csv(
+        out_dir / "figure1b_rseqc_style_annotation_dependence_metrics.tsv",
+        sep="\t",
+        index=False,
+    )
+
+    table_s2 = supplementary_table_s2(
+        truth_metrics=truth_metrics,
+        sensitivity_summary=sensitivity_summary,
+        annotation_metrics=metrics_panel,
+    )
+    table_s2.to_csv(
+        out_dir / "supplementary_table_s2_synthetic_summary.tsv",
+        sep="\t",
+        index=False,
+    )
+
+    if not write_plots:
+        return
+    plot_truth_metrics(
+        truth_metrics,
+        out_dir / "figure1a_isocomp_truth_metrics.png",
+    )
+    plot_sensitivity_heatmap(
+        sensitivity_panel,
+        out_dir / "figure1c_parameter_sensitivity_heatmap.png",
+    )
+    plot_article_annotation_dependence(
+        profile_panel,
+        out_dir / "figure1b_rseqc_style_annotation_dependence.png",
+        normalization=normalization,
+    )
+
+
+def article_truth_metrics(default_metrics: pd.DataFrame) -> pd.DataFrame:
+    metrics = [
+        ("assignment status accuracy", "status_accuracy"),
+        ("unique transcript accuracy", "unique_transcript_accuracy"),
+        ("full-length precision", "full_length_precision"),
+        ("full-length recall", "full_length_recall"),
+        ("full-length F1", "full_length_f1"),
+    ]
+    if default_metrics.empty:
+        return pd.DataFrame(columns=["metric", "value"])
+    row = default_metrics.iloc[0]
+    return pd.DataFrame(
+        [{"metric": label, "value": float(row[column])} for label, column in metrics]
+    )
+
+
+def article_sensitivity_panel(summary: pd.DataFrame) -> pd.DataFrame:
+    defaults = {
+        "min_overlap": 50,
+        "junction_tol": 5,
+        "unique_threshold": 0.8,
+        "margin_threshold": 0.1,
+    }
+    data = summary.copy()
+    for column, value in defaults.items():
+        data = data.loc[data[column] == value]
+    if data.empty:
+        data = summary.copy()
+    return (
+        data.groupby(["tss_tol", "tes_tol", "coverage_threshold"], as_index=False)
+        .agg(
+            full_length_precision=("full_length_precision", "mean"),
+            full_length_recall=("full_length_recall", "mean"),
+            full_length_f1=("full_length_f1", "mean"),
+        )
+        .sort_values(["coverage_threshold", "tss_tol", "tes_tol"])
+        .rename(columns={"tss_tol": "terminal_tolerance_bp"})
+    )
+
+
+def article_annotation_dependence_profiles(
+    profiles: pd.DataFrame,
+    *,
+    normalization: str,
+) -> pd.DataFrame:
+    profile_names = [
+        "truth_read_centric",
+        "isocomp_unique_assignment",
+        "rseqc_truth_expressed_annotation",
+        "rseqc_complete_annotation",
+        "rseqc_redundant_annotation",
+    ]
+    labels = {
+        "truth_read_centric": "Truth read-centric",
+        "isocomp_unique_assignment": "IsoComp unique assignment",
+        "rseqc_truth_expressed_annotation": "RSeQC-style expressed-only annotation",
+        "rseqc_complete_annotation": "RSeQC-style complete annotation",
+        "rseqc_redundant_annotation": "RSeQC-style redundant annotation",
+    }
+    rows = []
+    for profile_name in profile_names:
+        column = f"{profile_name}_{normalization}_normalized"
+        raw_column = f"{profile_name}_raw"
+        if column not in profiles:
+            continue
+        for row in profiles.itertuples(index=False):
+            rows.append(
+                {
+                    "bin": int(row.bin),
+                    "profile": profile_name,
+                    "label": labels[profile_name],
+                    "raw_coverage": getattr(row, raw_column),
+                    f"{normalization}_normalized_coverage": getattr(row, column),
+                    "normalization": normalization,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def article_annotation_dependence_metrics(
+    metrics: pd.DataFrame,
+    *,
+    normalization: str,
+) -> pd.DataFrame:
+    rename_map = {
+        f"mae_{normalization}_normalized_vs_truth": "mae_vs_truth",
+        f"rmse_{normalization}_normalized_vs_truth": "rmse_vs_truth",
+        f"pearson_{normalization}_normalized_vs_truth": "pearson_vs_truth",
+        f"first_decile_{normalization}_normalized": "first_decile",
+        f"last_decile_{normalization}_normalized": "last_decile",
+        (
+            f"first_to_last_decile_ratio_{normalization}_normalized"
+            if normalization == "max"
+            else "first_to_last_decile_ratio"
+        ): "first_to_last_decile_ratio",
+    }
+    base_columns = ["profile", "transcript_models_scanned", "projection_events"]
+    selected_columns = base_columns + [
+        column for column in rename_map if column in metrics.columns
+    ]
+    return metrics.loc[:, selected_columns].rename(columns=rename_map)
+
+
+def supplementary_table_s2(
+    *,
+    truth_metrics: pd.DataFrame,
+    sensitivity_summary: pd.DataFrame,
+    annotation_metrics: pd.DataFrame,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for row in truth_metrics.itertuples(index=False):
+        rows.append(
+            {
+                "section": "synthetic_truth",
+                "setting": "default",
+                "metric": row.metric,
+                "value": row.value,
+            }
+        )
+
+    if not sensitivity_summary.empty:
+        rows.extend(
+            [
+                {
+                    "section": "parameter_sensitivity",
+                    "setting": "best_parameter_set",
+                    "metric": "full_length_F1",
+                    "value": float(sensitivity_summary["full_length_f1"].max()),
+                },
+                {
+                    "section": "parameter_sensitivity",
+                    "setting": "worst_parameter_set",
+                    "metric": "full_length_F1",
+                    "value": float(sensitivity_summary["full_length_f1"].min()),
+                },
+                {
+                    "section": "parameter_sensitivity",
+                    "setting": "tested_terminal_tolerance_bp",
+                    "metric": "values",
+                    "value": ",".join(
+                        str(int(value))
+                        for value in sorted(sensitivity_summary["tss_tol"].unique())
+                    ),
+                },
+                {
+                    "section": "parameter_sensitivity",
+                    "setting": "tested_coverage_threshold",
+                    "metric": "values",
+                    "value": ",".join(
+                        f"{value:g}"
+                        for value in sorted(
+                            sensitivity_summary["coverage_threshold"].unique()
+                        )
+                    ),
+                },
+            ]
+        )
+
+    for row in annotation_metrics.itertuples(index=False):
+        rows.extend(
+            [
+                {
+                    "section": "RSeQC_style_annotation_dependence",
+                    "setting": row.profile,
+                    "metric": "transcript_models_scanned",
+                    "value": row.transcript_models_scanned,
+                },
+                {
+                    "section": "RSeQC_style_annotation_dependence",
+                    "setting": row.profile,
+                    "metric": "RMSE_vs_truth",
+                    "value": getattr(row, "rmse_vs_truth", math.nan),
+                },
+                {
+                    "section": "RSeQC_style_annotation_dependence",
+                    "setting": row.profile,
+                    "metric": "first_to_last_decile_ratio",
+                    "value": getattr(row, "first_to_last_decile_ratio", math.nan),
+                },
+            ]
+        )
+    return pd.DataFrame(rows)
+
+
+def plot_truth_metrics(metrics: pd.DataFrame, path: Path) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib is not installed; skipping truth metric plot")
+        return
+    if metrics.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.2))
+    ax.bar(metrics["metric"], metrics["value"], color="#4C78A8")
+    ax.set_ylabel("Performance")
+    ax.set_ylim(0, 1.05)
+    ax.set_title("IsoComp synthetic truth benchmark")
+    ax.tick_params(axis="x", rotation=30)
+    for label in ax.get_xticklabels():
+        label.set_horizontalalignment("right")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def plot_sensitivity_heatmap(panel: pd.DataFrame, path: Path) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib is not installed; skipping sensitivity heatmap")
+        return
+    if panel.empty:
+        return
+
+    matrix = panel.pivot_table(
+        index="coverage_threshold",
+        columns="terminal_tolerance_bp",
+        values="full_length_f1",
+    ).sort_index(ascending=False)
+    fig, ax = plt.subplots(figsize=(5.4, 4.4))
+    image = ax.imshow(matrix.values, vmin=0, vmax=1, cmap="viridis", aspect="auto")
+    ax.set_xticks(range(len(matrix.columns)), [int(value) for value in matrix.columns])
+    ax.set_yticks(range(len(matrix.index)), [f"{value:g}" for value in matrix.index])
+    ax.set_xlabel("Terminal tolerance (bp)")
+    ax.set_ylabel("Coverage threshold")
+    ax.set_title("Full-length-like F1 sensitivity")
+    for row_index, coverage_threshold in enumerate(matrix.index):
+        for col_index, terminal_tolerance in enumerate(matrix.columns):
+            value = matrix.loc[coverage_threshold, terminal_tolerance]
+            ax.text(col_index, row_index, f"{value:.2f}", ha="center", va="center")
+    fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04, label="F1")
+    fig.tight_layout()
+    fig.savefig(path, dpi=300)
+    plt.close(fig)
+
+
+def plot_article_annotation_dependence(
+    panel: pd.DataFrame,
+    path: Path,
+    *,
+    normalization: str,
+) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib is not installed; skipping annotation-dependence plot")
+        return
+    if panel.empty:
+        return
+
+    y_column = f"{normalization}_normalized_coverage"
+    fig, ax = plt.subplots(figsize=(8.0, 4.8))
+    for label, subset in panel.groupby("label", sort=False):
+        ax.plot(subset["bin"], subset[y_column], linewidth=2, label=label)
+    ax.set_xlabel("Transcript body bin, 5' to 3'")
+    ax.set_ylabel(f"{normalization.capitalize()}-normalized coverage")
+    ax.set_title("Synthetic RSeQC-style annotation dependence")
+    ax.legend(frameon=False, fontsize=8)
     fig.tight_layout()
     fig.savefig(path, dpi=300)
     plt.close(fig)

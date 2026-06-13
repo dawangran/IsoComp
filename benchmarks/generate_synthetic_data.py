@@ -14,8 +14,10 @@ Outputs are intended for manual tool testing:
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 CMATCH = 0
 CREF_SKIP = 3
@@ -72,10 +74,15 @@ def main() -> None:
 
     transcripts = build_transcripts()
     reads = build_reads(transcripts, replicates=args.replicates, mapq=args.mapq)
+    redundant_transcripts = build_redundant_transcripts(transcripts)
 
     complete_bed = args.out_dir / "synthetic.complete.bed12"
     expressed_bed = args.out_dir / "synthetic.expressed_only.bed12"
+    redundant_bed = args.out_dir / "synthetic.redundant.bed12"
+    manifest_tsv = args.out_dir / "synthetic.annotation_manifest.tsv"
     truth_tsv = args.out_dir / "synthetic.truth.tsv"
+    profile_tsv = args.out_dir / "synthetic.expected_profiles.tsv"
+    profile_metrics_tsv = args.out_dir / "synthetic.expected_profile_metrics.tsv"
     unsorted_bam = args.out_dir / "synthetic.unsorted.bam"
     sorted_bam = args.out_dir / "synthetic.sorted.bam"
 
@@ -84,7 +91,17 @@ def main() -> None:
         expressed_bed,
         {name: tx for name, tx in transcripts.items() if tx.expressed},
     )
+    write_bed12(redundant_bed, redundant_transcripts)
+    write_annotation_manifest(manifest_tsv, transcripts, redundant_transcripts)
     write_truth_tsv(truth_tsv, reads)
+    profile_rows, profile_metric_rows = compute_annotation_dependence_profiles(
+        reads=reads,
+        complete_transcripts=transcripts,
+        redundant_transcripts=redundant_transcripts,
+        bin_num=args.bin_num,
+    )
+    write_table(profile_tsv, profile_rows)
+    write_table(profile_metrics_tsv, profile_metric_rows)
     write_bam_and_index(
         unsorted_bam=unsorted_bam,
         sorted_bam=sorted_bam,
@@ -96,13 +113,16 @@ def main() -> None:
         sorted_bam=sorted_bam,
         complete_bed=complete_bed,
         expressed_bed=expressed_bed,
+        redundant_bed=redundant_bed,
     )
 
     print(f"Wrote synthetic data to {args.out_dir}")
     print(f"Complete annotation: {complete_bed}")
     print(f"Expressed-only annotation: {expressed_bed}")
+    print(f"Redundant annotation: {redundant_bed}")
     print(f"Sorted BAM: {sorted_bam}")
     print(f"Truth labels: {truth_tsv}")
+    print(f"Expected profiles: {profile_tsv}")
     print(f"Commands: {args.out_dir / 'run_commands.sh'}")
 
 
@@ -133,6 +153,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=12000,
         help="Length of synthetic chromosome chrSyn.",
+    )
+    parser.add_argument(
+        "--bin-num",
+        type=int,
+        default=100,
+        help="Number of transcript-body bins for expected synthetic profiles.",
     )
     return parser.parse_args()
 
@@ -211,6 +237,54 @@ def build_transcripts() -> dict[str, Transcript]:
         ),
     ]
     return {item.transcript_id: item for item in items}
+
+
+def build_redundant_transcripts(
+    transcripts: dict[str, Transcript],
+) -> dict[str, Transcript]:
+    """Add unexpressed overlapping models for the RSeQC annotation-dependence test."""
+
+    items = dict(transcripts)
+    extras = [
+        Transcript(
+            "TX_POS_MAIN_REDUNDANT_DUP",
+            "chrSyn",
+            "+",
+            ((1000, 1100), (1300, 1400), (1600, 1700)),
+            expressed=False,
+        ),
+        Transcript(
+            "TX_POS_MAIN_REDUNDANT_5P_SHORT",
+            "chrSyn",
+            "+",
+            ((1040, 1100), (1300, 1400), (1600, 1700)),
+            expressed=False,
+        ),
+        Transcript(
+            "TX_POS_SHARED_EXON_DECOY",
+            "chrSyn",
+            "+",
+            ((1000, 1100), (1300, 1400)),
+            expressed=False,
+        ),
+        Transcript(
+            "TX_NEG_MAIN_REDUNDANT_DUP",
+            "chrSyn",
+            "-",
+            ((4000, 4100), (4300, 4400), (4600, 4700)),
+            expressed=False,
+        ),
+        Transcript(
+            "TX_LONG_INTERNAL_DECOY",
+            "chrSyn",
+            "+",
+            ((7500, 7800), (8100, 8500)),
+            expressed=False,
+        ),
+    ]
+    for transcript in extras:
+        items[transcript.transcript_id] = transcript
+    return items
 
 
 def build_reads(
@@ -496,6 +570,333 @@ def nullable(value: object | None) -> str:
     return "" if value is None else str(value)
 
 
+def write_annotation_manifest(
+    path: Path,
+    complete_transcripts: dict[str, Transcript],
+    redundant_transcripts: dict[str, Transcript],
+) -> None:
+    columns = [
+        "transcript_id",
+        "chrom",
+        "strand",
+        "transcript_length",
+        "category",
+        "expressed_in_truth",
+        "in_expressed_only_annotation",
+        "in_complete_annotation",
+        "in_redundant_annotation",
+    ]
+    rows = []
+    for transcript_id in sorted(redundant_transcripts):
+        transcript = redundant_transcripts[transcript_id]
+        in_complete = transcript_id in complete_transcripts
+        if transcript.expressed:
+            category = "truth_expressed"
+        elif in_complete:
+            category = "complete_annotation_decoy"
+        else:
+            category = "redundant_annotation_decoy"
+        rows.append(
+            {
+                "transcript_id": transcript_id,
+                "chrom": transcript.chrom,
+                "strand": transcript.strand,
+                "transcript_length": transcript.transcript_length,
+                "category": category,
+                "expressed_in_truth": int(transcript.expressed),
+                "in_expressed_only_annotation": int(transcript.expressed and in_complete),
+                "in_complete_annotation": int(in_complete),
+                "in_redundant_annotation": 1,
+            }
+        )
+    write_table(path, rows, columns=columns)
+
+
+def compute_annotation_dependence_profiles(
+    *,
+    reads: list[SyntheticRead],
+    complete_transcripts: dict[str, Transcript],
+    redundant_transcripts: dict[str, Transcript],
+    bin_num: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if bin_num < 1:
+        raise ValueError("--bin-num must be >= 1")
+
+    expressed_transcripts = {
+        name: transcript
+        for name, transcript in complete_transcripts.items()
+        if transcript.expressed
+    }
+    profile_sets = {
+        "truth_read_centric": None,
+        "rseqc_style_expressed_only_annotation": expressed_transcripts,
+        "rseqc_style_complete_annotation": complete_transcripts,
+        "rseqc_style_redundant_annotation": redundant_transcripts,
+    }
+    raw_profiles = {name: [0.0] * bin_num for name in profile_sets}
+    projection_counts = {name: 0 for name in profile_sets}
+
+    for read in reads:
+        if read.truth_status == "unique" and read.truth_transcript_id:
+            transcript = complete_transcripts.get(read.truth_transcript_id)
+            if transcript is not None and add_read_to_profile(
+                raw_profiles["truth_read_centric"],
+                read,
+                transcript,
+            ):
+                projection_counts["truth_read_centric"] += 1
+
+        for profile_name in [
+            "rseqc_style_expressed_only_annotation",
+            "rseqc_style_complete_annotation",
+            "rseqc_style_redundant_annotation",
+        ]:
+            transcript_set = profile_sets[profile_name]
+            if transcript_set is None:
+                continue
+            for transcript in transcript_set.values():
+                if add_read_to_profile(raw_profiles[profile_name], read, transcript):
+                    projection_counts[profile_name] += 1
+
+    mean_profiles = {
+        name: mean_normalize(values)
+        for name, values in raw_profiles.items()
+    }
+    max_profiles = {
+        name: max_normalize(values)
+        for name, values in raw_profiles.items()
+    }
+    profile_rows = []
+    for index in range(bin_num):
+        row: dict[str, Any] = {"bin": index + 1}
+        for name in raw_profiles:
+            row[f"{name}_raw"] = raw_profiles[name][index]
+            row[f"{name}_mean_normalized"] = mean_profiles[name][index]
+            row[f"{name}_max_normalized"] = max_profiles[name][index]
+        profile_rows.append(row)
+
+    truth_raw = raw_profiles["truth_read_centric"]
+    truth_mean = mean_profiles["truth_read_centric"]
+    truth_max = max_profiles["truth_read_centric"]
+    transcript_model_counts = {
+        "truth_read_centric": math.nan,
+        "rseqc_style_expressed_only_annotation": len(expressed_transcripts),
+        "rseqc_style_complete_annotation": len(complete_transcripts),
+        "rseqc_style_redundant_annotation": len(redundant_transcripts),
+    }
+    metric_rows = []
+    for name in raw_profiles:
+        mean_values = mean_profiles[name]
+        max_values = max_profiles[name]
+        metric_rows.append(
+            {
+                "profile": name,
+                "transcript_models_scanned": transcript_model_counts[name],
+                "projection_events": projection_counts[name],
+                "total_coverage": sum(raw_profiles[name]),
+                "total_coverage_ratio_vs_truth": safe_divide(
+                    sum(raw_profiles[name]),
+                    sum(truth_raw),
+                ),
+                "mae_mean_normalized_vs_truth": mean_absolute_error(
+                    mean_values,
+                    truth_mean,
+                ),
+                "rmse_mean_normalized_vs_truth": root_mean_squared_error(
+                    mean_values,
+                    truth_mean,
+                ),
+                "pearson_mean_normalized_vs_truth": pearson_correlation(
+                    mean_values,
+                    truth_mean,
+                ),
+                "mae_max_normalized_vs_truth": mean_absolute_error(
+                    max_values,
+                    truth_max,
+                ),
+                "rmse_max_normalized_vs_truth": root_mean_squared_error(
+                    max_values,
+                    truth_max,
+                ),
+                "pearson_max_normalized_vs_truth": pearson_correlation(
+                    max_values,
+                    truth_max,
+                ),
+                "first_decile_max_normalized": decile_mean(max_values, 0),
+                "last_decile_max_normalized": decile_mean(max_values, 9),
+                "first_to_last_decile_ratio_max_normalized": safe_divide(
+                    decile_mean(max_values, 0),
+                    decile_mean(max_values, 9),
+                ),
+            }
+        )
+
+    return profile_rows, metric_rows
+
+
+def add_read_to_profile(
+    bins: list[float],
+    read: SyntheticRead,
+    transcript: Transcript,
+) -> bool:
+    projected = project_read_to_transcript(read, transcript)
+    if not projected:
+        return False
+    for interval in projected:
+        add_interval_to_bins(bins, interval, transcript.transcript_length)
+    return True
+
+
+def project_read_to_transcript(
+    read: SyntheticRead,
+    transcript: Transcript,
+) -> list[tuple[int, int]]:
+    intervals: list[tuple[int, int]] = []
+    for block_start, block_end in blocks_from_cigar(read.start, read.cigar):
+        for genomic_start, genomic_end, exon_tx_start, _ in transcript.tx_exons:
+            overlap_start = max(block_start, genomic_start)
+            overlap_end = min(block_end, genomic_end)
+            if overlap_end <= overlap_start:
+                continue
+            if transcript.strand == "-":
+                tx_start = exon_tx_start + (genomic_end - overlap_end)
+                tx_end = exon_tx_start + (genomic_end - overlap_start)
+            else:
+                tx_start = exon_tx_start + (overlap_start - genomic_start)
+                tx_end = exon_tx_start + (overlap_end - genomic_start)
+            intervals.append((tx_start, tx_end))
+    return sorted(intervals)
+
+
+def blocks_from_cigar(
+    reference_start: int,
+    cigar: tuple[tuple[int, int], ...],
+) -> list[tuple[int, int]]:
+    ref_pos = reference_start
+    current_start: int | None = None
+    blocks: list[tuple[int, int]] = []
+    for op, length in cigar:
+        if op == CMATCH:
+            if current_start is None:
+                current_start = ref_pos
+            ref_pos += length
+        elif op == CREF_SKIP:
+            if current_start is not None and ref_pos > current_start:
+                blocks.append((current_start, ref_pos))
+            ref_pos += length
+            current_start = None
+        else:
+            raise ValueError(f"Unsupported synthetic CIGAR op: {op}")
+    if current_start is not None and ref_pos > current_start:
+        blocks.append((current_start, ref_pos))
+    return blocks
+
+
+def add_interval_to_bins(
+    bins: list[float],
+    interval: tuple[int, int],
+    transcript_length: int,
+) -> None:
+    start, end = interval
+    if transcript_length <= 0 or end <= start:
+        return
+    bin_num = len(bins)
+    first_bin = max(0, min(bin_num - 1, int(start * bin_num / transcript_length)))
+    last_bin = max(0, min(bin_num - 1, int((end - 1) * bin_num / transcript_length)))
+    for bin_index in range(first_bin, last_bin + 1):
+        bin_start = bin_index * transcript_length / bin_num
+        bin_end = (bin_index + 1) * transcript_length / bin_num
+        overlap = max(0.0, min(end, bin_end) - max(start, bin_start))
+        bin_width = bin_end - bin_start
+        if bin_width > 0:
+            bins[bin_index] += overlap / bin_width
+
+
+def mean_normalize(values: list[float]) -> list[float]:
+    mean_value = sum(values) / len(values) if values else 0.0
+    if mean_value <= 0:
+        return [0.0 for _ in values]
+    return [value / mean_value for value in values]
+
+
+def max_normalize(values: list[float]) -> list[float]:
+    max_value = max(values) if values else 0.0
+    if max_value <= 0:
+        return [0.0 for _ in values]
+    return [value / max_value for value in values]
+
+
+def mean_absolute_error(values: list[float], truth_values: list[float]) -> float:
+    if not values:
+        return math.nan
+    return sum(abs(value - truth) for value, truth in zip(values, truth_values)) / len(values)
+
+
+def root_mean_squared_error(values: list[float], truth_values: list[float]) -> float:
+    if not values:
+        return math.nan
+    return math.sqrt(
+        sum((value - truth) ** 2 for value, truth in zip(values, truth_values))
+        / len(values)
+    )
+
+
+def pearson_correlation(values: list[float], truth_values: list[float]) -> float:
+    if not values:
+        return math.nan
+    mean_value = sum(values) / len(values)
+    mean_truth = sum(truth_values) / len(truth_values)
+    numerator = sum(
+        (value - mean_value) * (truth - mean_truth)
+        for value, truth in zip(values, truth_values)
+    )
+    value_var = sum((value - mean_value) ** 2 for value in values)
+    truth_var = sum((truth - mean_truth) ** 2 for truth in truth_values)
+    return safe_divide(numerator, math.sqrt(value_var * truth_var))
+
+
+def decile_mean(values: list[float], decile_index: int) -> float:
+    if not values:
+        return math.nan
+    start = int(decile_index * len(values) / 10)
+    end = int((decile_index + 1) * len(values) / 10)
+    subset = values[start:end]
+    if not subset:
+        return math.nan
+    return sum(subset) / len(subset)
+
+
+def safe_divide(numerator: float, denominator: float) -> float:
+    if denominator == 0:
+        return math.nan
+    return float(numerator / denominator)
+
+
+def write_table(
+    path: Path,
+    rows: list[dict[str, Any]],
+    *,
+    columns: list[str] | None = None,
+) -> None:
+    if not rows and columns is None:
+        path.write_text("", encoding="utf-8")
+        return
+    if columns is None:
+        columns = list(rows[0])
+    lines = ["\t".join(columns)]
+    for row in rows:
+        lines.append("\t".join(format_tsv_value(row.get(column, "")) for column in columns))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def format_tsv_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and math.isnan(value):
+        return ""
+    return str(value)
+
+
 def write_bam_and_index(
     *,
     unsorted_bam: Path,
@@ -540,12 +941,14 @@ def write_run_commands(
     sorted_bam: Path,
     complete_bed: Path,
     expressed_bed: Path,
+    redundant_bed: Path,
 ) -> None:
     repo_root = Path.cwd().resolve()
     output_dir = path.parent
     sorted_bam = sorted_bam.resolve()
     complete_bed = complete_bed.resolve()
     expressed_bed = expressed_bed.resolve()
+    redundant_bed = redundant_bed.resolve()
     output_dir = output_dir.resolve()
     text = f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -554,9 +957,11 @@ set -euo pipefail
 # Example:
 #   ISOCOMP_CMD="benchmark_runs/rseqc_venv/bin/python -m isocomp.cli" \\
 #   RSEQC_CMD="benchmark_runs/rseqc_venv/bin/geneBody_coverage.py" \\
+#   PYTHON_CMD="benchmark_runs/rseqc_venv/bin/python" \\
 #   bash {path.name}
 ISOCOMP_CMD="${{ISOCOMP_CMD:-isocomp}}"
 RSEQC_CMD="${{RSEQC_CMD:-geneBody_coverage.py}}"
+PYTHON_CMD="${{PYTHON_CMD:-python}}"
 export PYTHONPATH="{repo_root}:${{PYTHONPATH:-}}"
 
 # IsoComp on the complete annotation.
@@ -574,15 +979,29 @@ $ISOCOMP_CMD \\
 $RSEQC_CMD \\
   -i {sorted_bam} \\
   -r {complete_bed} \\
-  -o {output_dir / 'rseqc.complete'} \\
+  -o {output_dir / 'rseqc.complete_annotation'} \\
   -f png
 
 # RSeQC on an expressed-only annotation, useful as a matched-annotation control.
 $RSEQC_CMD \\
   -i {sorted_bam} \\
   -r {expressed_bed} \\
-  -o {output_dir / 'rseqc.expressed_only'} \\
+  -o {output_dir / 'rseqc.expressed_only_annotation'} \\
   -f png
+
+# RSeQC on a redundant annotation with extra overlapping unexpressed models.
+$RSEQC_CMD \\
+  -i {sorted_bam} \\
+  -r {redundant_bed} \\
+  -o {output_dir / 'rseqc.redundant_annotation'} \\
+  -f png
+
+# Manuscript-ready parser/plotter for the three RSeQC outputs above.
+$PYTHON_CMD {repo_root / 'benchmarks' / 'rseqc_annotation_dependence.py'} \\
+  --input-dir {output_dir} \\
+  --out-dir {output_dir / 'rseqc_annotation_dependence'} \\
+  --rseqc-output-dir {output_dir} \\
+  --skip-rseqc
 """
     path.write_text(text, encoding="utf-8")
     path.chmod(0o755)
