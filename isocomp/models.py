@@ -41,6 +41,12 @@ class Transcript:
         for start, end in exons:
             if start < 0 or end <= start:
                 raise ValueError(f"Invalid exon for {self.transcript_id}: {start}-{end}")
+        for previous, current in zip(exons, exons[1:]):
+            if current[0] < previous[1]:
+                raise ValueError(
+                    f"Overlapping exons for {self.transcript_id}: "
+                    f"{previous[0]}-{previous[1]} and {current[0]}-{current[1]}"
+                )
 
         transcript_length = sum(end - start for start, end in exons)
         junctions = [
@@ -85,6 +91,8 @@ class ReadAlignment:
     is_reverse: bool
     softclip_5p: int = 0
     softclip_3p: int = 0
+    softclip_left: int = 0
+    softclip_right: int = 0
 
 
 @dataclass(frozen=True)
@@ -170,4 +178,3 @@ class RunSummary:
     gene_only_reads: int = 0
     low_confidence_reads: int = 0
     unassigned_reads: int = 0
-

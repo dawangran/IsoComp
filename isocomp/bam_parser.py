@@ -19,8 +19,9 @@ CHARD_CLIP = 5
 CEQUAL = 7
 CDIFF = 8
 
-REFERENCE_FOOTPRINT_OPS = {CMATCH, CDEL, CEQUAL, CDIFF}
+REFERENCE_FOOTPRINT_OPS = {CMATCH, CEQUAL, CDIFF}
 REFERENCE_GAP_OPS = {CREF_SKIP}
+REFERENCE_DELETION_OPS = {CDEL}
 REFERENCE_CONSUMING_OPS = {CMATCH, CDEL, CREF_SKIP, CEQUAL, CDIFF}
 
 
@@ -103,7 +104,11 @@ def parse_alignment_record(read: pysam.AlignedSegment) -> ReadAlignment:
         genomic_start = merged_blocks[0][0]
         genomic_end = merged_blocks[-1][1]
 
-    softclip_5p, softclip_3p = softclips_from_cigar(read.cigartuples)
+    softclip_left, softclip_right = softclip_reference_ends_from_cigar(read.cigartuples)
+    softclip_5p, softclip_3p = softclips_from_cigar(
+        read.cigartuples,
+        is_reverse=read.is_reverse,
+    )
     return ReadAlignment(
         read_id=read.query_name,
         chrom=read.reference_name,
@@ -117,6 +122,8 @@ def parse_alignment_record(read: pysam.AlignedSegment) -> ReadAlignment:
         is_reverse=read.is_reverse,
         softclip_5p=softclip_5p,
         softclip_3p=softclip_3p,
+        softclip_left=softclip_left,
+        softclip_right=softclip_right,
     )
 
 
@@ -144,6 +151,11 @@ def cigar_to_blocks_and_junctions(
             ref_pos += length
             junctions.append((junction_start, ref_pos))
             current_block_start = None
+        elif op in REFERENCE_DELETION_OPS:
+            if current_block_start is not None and ref_pos > current_block_start:
+                blocks.append((current_block_start, ref_pos))
+            ref_pos += length
+            current_block_start = None
         elif op in REFERENCE_CONSUMING_OPS:
             ref_pos += length
         else:
@@ -155,8 +167,20 @@ def cigar_to_blocks_and_junctions(
     return blocks, junctions
 
 
-def softclips_from_cigar(cigartuples: list[tuple[int, int]]) -> tuple[int, int]:
+def softclips_from_cigar(
+    cigartuples: list[tuple[int, int]],
+    *,
+    is_reverse: bool = False,
+) -> tuple[int, int]:
+    left, right = softclip_reference_ends_from_cigar(cigartuples)
+    if is_reverse:
+        return right, left
+    return left, right
+
+
+def softclip_reference_ends_from_cigar(
+    cigartuples: list[tuple[int, int]],
+) -> tuple[int, int]:
     left = cigartuples[0][1] if cigartuples and cigartuples[0][0] == CSOFT_CLIP else 0
     right = cigartuples[-1][1] if cigartuples and cigartuples[-1][0] == CSOFT_CLIP else 0
     return left, right
-

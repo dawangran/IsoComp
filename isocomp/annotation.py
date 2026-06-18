@@ -83,15 +83,17 @@ def parse_bed12_line(line: str, line_number: int = 1) -> Transcript:
             raise AnnotationError(f"BED12 line {line_number} exon extends beyond chromEnd")
         exons.append((exon_start, exon_end))
 
-    return Transcript(
-        transcript_id=name,
-        gene_id=None,
-        chrom=chrom,
-        strand=strand,
-        exons=exons,
-    )
+    try:
+        return Transcript(
+            transcript_id=name,
+            gene_id=None,
+            chrom=chrom,
+            strand=strand,
+            exons=exons,
+        )
+    except ValueError as exc:
+        raise AnnotationError(f"BED12 line {line_number} has invalid exon structure: {exc}") from exc
 
 
 def _parse_int_list(value: str) -> list[int]:
     return [int(item) for item in value.rstrip(",").split(",") if item != ""]
-

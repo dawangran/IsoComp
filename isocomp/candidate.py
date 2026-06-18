@@ -71,18 +71,50 @@ class CandidateIndex:
         tree = self.by_chrom.get(read.chrom)
         if tree is None:
             return []
+        if strandness not in {"unstranded", "forward", "reverse", "auto"}:
+            raise ValueError(
+                "strandness must be one of unstranded, forward, reverse, auto; "
+                f"got {strandness!r}"
+            )
 
-        hits: list[CandidateHit] = []
+        raw_hits: list[CandidateHit] = []
         for interval in sorted(tree.overlap(read.genomic_start, read.genomic_end)):
             transcript = interval.data
-            if not _strand_compatible(read, transcript, strandness):
-                continue
             exonic_overlap = total_overlap_length(read.blocks, transcript.exons)
             if exonic_overlap >= min_overlap:
-                hits.append(CandidateHit(transcript=transcript, exonic_overlap=exonic_overlap))
+                raw_hits.append(CandidateHit(transcript=transcript, exonic_overlap=exonic_overlap))
+
+        if strandness == "auto":
+            hits = _auto_strand_hits(read, raw_hits)
+        else:
+            hits = [
+                hit
+                for hit in raw_hits
+                if _strand_compatible(read, hit.transcript, strandness)
+            ]
 
         hits.sort(key=lambda hit: (-hit.exonic_overlap, hit.transcript.transcript_id))
         return hits
+
+
+def _auto_strand_hits(read: ReadAlignment, hits: list[CandidateHit]) -> list[CandidateHit]:
+    forward_hits = [
+        hit
+        for hit in hits
+        if hit.transcript.strand != "." and _strand_compatible(read, hit.transcript, "forward")
+    ]
+    reverse_hits = [
+        hit
+        for hit in hits
+        if hit.transcript.strand != "." and _strand_compatible(read, hit.transcript, "reverse")
+    ]
+    unknown_hits = [hit for hit in hits if hit.transcript.strand == "."]
+
+    if forward_hits and not reverse_hits:
+        return forward_hits + unknown_hits
+    if reverse_hits and not forward_hits:
+        return reverse_hits + unknown_hits
+    return hits
 
 
 def _strand_compatible(read: ReadAlignment, transcript: Transcript, strandness: str) -> bool:
@@ -92,8 +124,6 @@ def _strand_compatible(read: ReadAlignment, transcript: Transcript, strandness: 
         read_strand = "-" if read.is_reverse else "+"
     elif strandness == "reverse":
         read_strand = "+" if read.is_reverse else "-"
-    elif strandness == "auto":
-        return True
     else:
         raise ValueError(
             "strandness must be one of unstranded, forward, reverse, auto; "
