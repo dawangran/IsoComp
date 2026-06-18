@@ -69,6 +69,7 @@ class ParameterSet:
     junction_tol: int
     unique_threshold: float
     margin_threshold: float
+    min_unspliced_coverage_for_unique: float
     tss_tol: int
     tes_tol: int
     coverage_threshold: float
@@ -98,6 +99,7 @@ def main() -> None:
         args.junction_tols,
         args.unique_thresholds,
         args.margin_thresholds,
+        args.min_unspliced_coverages,
         args.terminal_tolerances,
         args.coverage_thresholds,
     )
@@ -222,6 +224,15 @@ def parse_args() -> argparse.Namespace:
         type=float_list,
         default=[0.05, 0.1, 0.2],
         help="Comma-separated top-minus-second score margins to sweep.",
+    )
+    parser.add_argument(
+        "--min-unspliced-coverages",
+        type=float_list,
+        default=[0.0, 0.2, 0.4],
+        help=(
+            "Comma-separated minimum transcript coverage values for a "
+            "junctionless read to be unique on a spliced transcript."
+        ),
     )
     parser.add_argument(
         "--terminal-tolerances",
@@ -734,47 +745,52 @@ def build_parameter_grid(
     junction_tols: list[int],
     unique_thresholds: list[float],
     margin_thresholds: list[float],
+    min_unspliced_coverages: list[float],
     terminal_tolerances: list[int],
     coverage_thresholds: list[float],
 ) -> list[ParameterSet]:
     parameter_sets: list[ParameterSet] = [
-        ParameterSet("default", 50, 5, 0.8, 0.1, 100, 100, 0.8)
+        ParameterSet("default", 50, 5, 0.8, 0.1, 0.2, 100, 100, 0.8)
     ]
     seen = {signature(parameter_sets[0])}
     for min_overlap in min_overlaps:
         for junction_tol in junction_tols:
             for unique_threshold in unique_thresholds:
                 for margin_threshold in margin_thresholds:
-                    for terminal_tolerance in terminal_tolerances:
-                        for coverage_threshold in coverage_thresholds:
-                            item = ParameterSet(
-                                parameter_set=(
-                                    f"mo{min_overlap}_jt{junction_tol}_"
-                                    f"ut{unique_threshold:g}_mt{margin_threshold:g}_"
-                                    f"tt{terminal_tolerance}_ct{coverage_threshold:g}"
-                                ),
-                                min_overlap=min_overlap,
-                                junction_tol=junction_tol,
-                                unique_threshold=unique_threshold,
-                                margin_threshold=margin_threshold,
-                                tss_tol=terminal_tolerance,
-                                tes_tol=terminal_tolerance,
-                                coverage_threshold=coverage_threshold,
-                            )
-                            key = signature(item)
-                            if key in seen:
-                                continue
-                            seen.add(key)
-                            parameter_sets.append(item)
+                    for min_unspliced_coverage in min_unspliced_coverages:
+                        for terminal_tolerance in terminal_tolerances:
+                            for coverage_threshold in coverage_thresholds:
+                                item = ParameterSet(
+                                    parameter_set=(
+                                        f"mo{min_overlap}_jt{junction_tol}_"
+                                        f"ut{unique_threshold:g}_mt{margin_threshold:g}_"
+                                        f"uc{min_unspliced_coverage:g}_"
+                                        f"tt{terminal_tolerance}_ct{coverage_threshold:g}"
+                                    ),
+                                    min_overlap=min_overlap,
+                                    junction_tol=junction_tol,
+                                    unique_threshold=unique_threshold,
+                                    margin_threshold=margin_threshold,
+                                    min_unspliced_coverage_for_unique=min_unspliced_coverage,
+                                    tss_tol=terminal_tolerance,
+                                    tes_tol=terminal_tolerance,
+                                    coverage_threshold=coverage_threshold,
+                                )
+                                key = signature(item)
+                                if key in seen:
+                                    continue
+                                seen.add(key)
+                                parameter_sets.append(item)
     return parameter_sets
 
 
-def signature(parameters: ParameterSet) -> tuple[int, int, float, float, int, int, float]:
+def signature(parameters: ParameterSet) -> tuple[int, int, float, float, float, int, int, float]:
     return (
         parameters.min_overlap,
         parameters.junction_tol,
         parameters.unique_threshold,
         parameters.margin_threshold,
+        parameters.min_unspliced_coverage_for_unique,
         parameters.tss_tol,
         parameters.tes_tol,
         parameters.coverage_threshold,
@@ -803,6 +819,7 @@ def run_parameter_set(
             junction_tol=parameters.junction_tol,
             unique_threshold=parameters.unique_threshold,
             margin_threshold=parameters.margin_threshold,
+            min_unspliced_coverage_for_unique=parameters.min_unspliced_coverage_for_unique,
         )
         metric = build_read_metrics(
             read,
@@ -849,6 +866,7 @@ def prediction_row(
         "junction_tol": parameters.junction_tol,
         "unique_threshold": parameters.unique_threshold,
         "margin_threshold": parameters.margin_threshold,
+        "min_unspliced_coverage_for_unique": parameters.min_unspliced_coverage_for_unique,
         "tss_tol": parameters.tss_tol,
         "tes_tol": parameters.tes_tol,
         "coverage_threshold": parameters.coverage_threshold,
@@ -932,6 +950,7 @@ def summarize_predictions(per_read: pd.DataFrame, parameters: ParameterSet) -> d
         "junction_tol": parameters.junction_tol,
         "unique_threshold": parameters.unique_threshold,
         "margin_threshold": parameters.margin_threshold,
+        "min_unspliced_coverage_for_unique": parameters.min_unspliced_coverage_for_unique,
         "tss_tol": parameters.tss_tol,
         "tes_tol": parameters.tes_tol,
         "coverage_threshold": parameters.coverage_threshold,
@@ -1434,6 +1453,7 @@ def article_sensitivity_panel(summary: pd.DataFrame) -> pd.DataFrame:
         "junction_tol": 5,
         "unique_threshold": 0.8,
         "margin_threshold": 0.1,
+        "min_unspliced_coverage_for_unique": 0.2,
     }
     data = summary.copy()
     for column, value in defaults.items():
@@ -1564,6 +1584,19 @@ def supplementary_table_s2(
                         f"{value:g}"
                         for value in sorted(
                             sensitivity_summary["coverage_threshold"].unique()
+                        )
+                    ),
+                },
+                {
+                    "section": "parameter_sensitivity",
+                    "setting": "tested_min_unspliced_coverage_for_unique",
+                    "metric": "values",
+                    "value": ",".join(
+                        f"{value:g}"
+                        for value in sorted(
+                            sensitivity_summary[
+                                "min_unspliced_coverage_for_unique"
+                            ].unique()
                         )
                     ),
                 },

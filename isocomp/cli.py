@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import csv
 import logging
+import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Annotated
 
+import numpy as np
 import pandas as pd
 import typer
 
@@ -20,15 +24,20 @@ from .io import (
     output_paths,
     write_dataframe,
     write_json,
-    write_read_assignment,
     write_transcript_body_coverage,
 )
 from .metrics import (
+    READ_ASSIGNMENT_COLUMNS,
+    SampleMetricAccumulator,
+    add_assignment_to_body_coverage,
     build_read_metrics,
-    compute_transcript_body_coverage,
-    summarize_sample,
-    summarize_transcripts,
+    init_transcript_accumulators,
+    read_metrics_to_row,
+    summarize_sample_accumulator,
+    summarize_transcript_accumulators,
+    update_sample_accumulator,
     update_summary_for_metric,
+    update_transcript_accumulators,
 )
 from .models import RunSummary
 
@@ -48,6 +57,15 @@ def run(
     tes_tol: Annotated[int, typer.Option("--tes-tol", min=0, help="3' completeness tolerance in bp.")] = 100,
     min_overlap: Annotated[int, typer.Option("--min-overlap", min=1, help="Minimum exonic overlap in bp.")] = 50,
     junction_tol: Annotated[int, typer.Option("--junction-tol", min=0, help="Splice-site tolerance in bp.")] = 5,
+    min_unspliced_coverage_for_unique: Annotated[
+        float,
+        typer.Option(
+            "--min-unspliced-coverage-for-unique",
+            min=0.0,
+            max=1.0,
+            help="Minimum transcript coverage for a junctionless read to be unique on a spliced transcript.",
+        ),
+    ] = 0.2,
     strandness: Annotated[
         str,
         typer.Option("--strandness", help="One of unstranded, forward, reverse, auto."),
@@ -81,6 +99,7 @@ def run(
             tes_tol=tes_tol,
             min_overlap=min_overlap,
             junction_tol=junction_tol,
+            min_unspliced_coverage_for_unique=min_unspliced_coverage_for_unique,
             strandness=strandness,
             threads=threads,
             force=force,
@@ -101,6 +120,7 @@ def run_pipeline(
     tes_tol: int,
     min_overlap: int,
     junction_tol: int,
+    min_unspliced_coverage_for_unique: float,
     strandness: str,
     threads: int,
     force: bool,
@@ -109,6 +129,11 @@ def run_pipeline(
         raise ValueError(
             "Invalid --strandness. Expected one of unstranded, forward, reverse, auto; "
             f"got {strandness!r}"
+        )
+    if not 0 <= min_unspliced_coverage_for_unique <= 1:
+        raise ValueError(
+            "--min-unspliced-coverage-for-unique must be between 0 and 1; "
+            f"got {min_unspliced_coverage_for_unique!r}"
         )
 
     paths = output_paths(out)
@@ -124,26 +149,78 @@ def run_pipeline(
         threads=threads,
     )
     summary = RunSummary()
-    read_metrics = []
-    assignments = []
+    sample_accumulator = SampleMetricAccumulator()
+    transcript_accumulators = init_transcript_accumulators(transcripts)
+    aggregate_coverage = np.zeros(bin_num, dtype=float)
+    per_transcript_coverage = {
+        transcript_id: np.zeros(bin_num, dtype=float)
+        for transcript_id in transcripts
+    }
+
+    from .plots import PlotData, update_plot_data, write_plots
+
+    plot_data = PlotData()
 
     LOGGER.info("Streaming BAM: %s", bam)
-    for read in read_iter:
-        candidates = candidate_index.query(
-            read,
-            min_overlap=min_overlap,
-            strandness=strandness,
-        )
-        assignment = assign_read(read, candidates, junction_tol=junction_tol)
-        metric = build_read_metrics(
-            read,
-            assignment,
-            tss_tol=tss_tol,
-            tes_tol=tes_tol,
-        )
-        update_summary_for_metric(summary, metric)
-        assignments.append(assignment)
-        read_metrics.append(metric)
+    tmp_read_assignment: str | None = None
+    try:
+        with NamedTemporaryFile(
+            "wt",
+            encoding="utf-8",
+            dir=paths["read_assignment"].parent,
+            delete=False,
+            newline="",
+        ) as handle:
+            tmp_read_assignment = handle.name
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=READ_ASSIGNMENT_COLUMNS,
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+
+            for read in read_iter:
+                candidates = candidate_index.query(
+                    read,
+                    min_overlap=min_overlap,
+                    strandness=strandness,
+                )
+                assignment = assign_read(
+                    read,
+                    candidates,
+                    junction_tol=junction_tol,
+                    min_unspliced_coverage_for_unique=min_unspliced_coverage_for_unique,
+                )
+                metric = build_read_metrics(
+                    read,
+                    assignment,
+                    tss_tol=tss_tol,
+                    tes_tol=tes_tol,
+                )
+                update_summary_for_metric(summary, metric)
+                update_sample_accumulator(sample_accumulator, metric)
+                update_transcript_accumulators(transcript_accumulators, metric)
+                add_assignment_to_body_coverage(
+                    aggregate_coverage,
+                    per_transcript_coverage,
+                    assignment,
+                )
+                update_plot_data(
+                    plot_data,
+                    metric,
+                    assignment,
+                    bin_num=bin_num,
+                )
+                writer.writerow(read_metrics_to_row(metric))
+        os.replace(tmp_read_assignment, paths["read_assignment"])
+    except Exception:
+        if tmp_read_assignment is not None:
+            try:
+                os.unlink(tmp_read_assignment)
+            except FileNotFoundError:
+                pass
+        raise
 
     summary.total_reads = filter_stats.total_reads
     summary.mapped_reads = filter_stats.mapped_reads
@@ -153,15 +230,17 @@ def run_pipeline(
     summary.usable_reads = filter_stats.usable_reads
 
     LOGGER.info("Parsed %d usable reads", summary.usable_reads)
-    aggregate_coverage, per_transcript_coverage = compute_transcript_body_coverage(
+    transcript_rows = summarize_transcript_accumulators(
         transcripts,
-        assignments,
-        bin_num=bin_num,
+        transcript_accumulators,
+        per_transcript_coverage,
     )
-    transcript_rows = summarize_transcripts(transcripts, read_metrics, per_transcript_coverage)
-    sample_row = summarize_sample(read_metrics, summary, sample_name=Path(out).name)
+    sample_row = summarize_sample_accumulator(
+        sample_accumulator,
+        summary,
+        sample_name=Path(out).name,
+    )
 
-    write_read_assignment(paths["read_assignment"], read_metrics)
     write_dataframe(paths["transcript_metrics"], pd.DataFrame(transcript_rows))
     write_dataframe(paths["sample_summary"], pd.DataFrame([sample_row]))
     write_transcript_body_coverage(paths["transcript_body_coverage"], aggregate_coverage)
@@ -179,20 +258,20 @@ def run_pipeline(
                 "tes_tol": tes_tol,
                 "min_overlap": min_overlap,
                 "junction_tol": junction_tol,
+                "min_unspliced_coverage_for_unique": min_unspliced_coverage_for_unique,
                 "strandness": strandness,
                 "threads": threads,
             },
             "counts": sample_row,
         },
     )
-    from .plots import write_plots
-
     write_plots(
         paths["plots_dir"],
-        read_metrics,
+        [],
         aggregate_coverage,
         per_transcript_coverage=per_transcript_coverage,
-        assignments=assignments,
+        assignments=[],
+        plot_data=plot_data,
     )
     LOGGER.info("IsoComp completed: %s", out)
 

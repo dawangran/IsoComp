@@ -81,10 +81,12 @@ def test_cli_pipeline_smoke(tmp_path: Path, bed12_path: Path, synthetic_bam: Pat
     assert negative["dist_to_3p"] == 0
 
     assert summary["total_reads"] == 7
+    assert summary["assigned_reads"] == 5
     assert summary["unique_assigned_reads"] == 4
     assert summary["ambiguous_reads"] == 1
     assert summary["low_confidence_reads"] == 1
     assert summary["unassigned_reads"] == 1
+    assert "all_assigned_median_transcript_coverage_fraction" in summary
     assert len(coverage) == 10
     assert list(coverage.columns) == [
         "bin",

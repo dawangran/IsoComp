@@ -35,3 +35,7 @@ def test_read_bed12_rejects_malformed_line(tmp_path) -> None:
     with pytest.raises(AnnotationError, match="expected at least 12"):
         read_bed12(path)
 
+
+def test_bed12_rejects_overlapping_blocks() -> None:
+    with pytest.raises(AnnotationError, match="Overlapping exons"):
+        parse_bed12_line("chr1\t100\t250\tToverlap\t0\t+\t100\t250\t0\t2\t100,100\t0,50")

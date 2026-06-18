@@ -33,6 +33,7 @@ def assign_read(
     junction_tol: int = 5,
     unique_threshold: float = 0.8,
     margin_threshold: float = 0.1,
+    min_unspliced_coverage_for_unique: float = 0.2,
 ) -> AssignmentResult:
     if not candidates:
         return AssignmentResult(
@@ -74,11 +75,19 @@ def assign_read(
         status = "ambiguous"
     else:
         status = "low_confidence"
+    if status == "unique" and _is_low_information_unspliced_read(
+        read,
+        top,
+        min_unspliced_coverage_for_unique=min_unspliced_coverage_for_unique,
+    ):
+        status = "low_confidence"
+    assigned_transcript = top.transcript if status in {"unique", "ambiguous"} else None
+    assigned_projection = top.projection if status in {"unique", "ambiguous"} else None
 
     return AssignmentResult(
         read_id=read.read_id,
         status=status,
-        transcript=top.transcript,
+        transcript=assigned_transcript,
         score=top.final_score,
         second_best_transcript=second_id,
         second_best_score=second_score,
@@ -86,7 +95,7 @@ def assign_read(
         junction_match_count=top.junction_match_count,
         junction_precision=top.junction_precision,
         junction_recall=top.junction_recall,
-        projection=top.projection,
+        projection=assigned_projection,
     )
 
 
@@ -175,3 +184,18 @@ def _transcript_junctions_in_read_span(
         for junction in transcript.junctions
         if junction[0] >= read_start and junction[1] <= read_end
     ]
+
+
+def _is_low_information_unspliced_read(
+    read: ReadAlignment,
+    score: CandidateScore,
+    *,
+    min_unspliced_coverage_for_unique: float,
+) -> bool:
+    if min_unspliced_coverage_for_unique <= 0:
+        return False
+    if read.junctions:
+        return False
+    if not score.transcript.junctions:
+        return False
+    return score.coverage_fraction < min_unspliced_coverage_for_unique

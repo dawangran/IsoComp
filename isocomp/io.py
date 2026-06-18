@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Iterable
 from pathlib import Path
@@ -74,10 +75,28 @@ def write_dataframe(path: Path, frame: pd.DataFrame) -> None:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     def writer(handle: Any) -> None:
-        json.dump(payload, handle, indent=2, sort_keys=True)
+        json.dump(_json_safe(payload), handle, allow_nan=False, indent=2, sort_keys=True)
         handle.write("\n")
 
     _atomic_write_text(path, writer)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, np.floating):
+        value = float(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def write_transcript_body_coverage(path: Path, coverage: Any) -> None:

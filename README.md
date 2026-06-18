@@ -78,6 +78,7 @@ isocomp \
   --out sample.isocomp \
   --threads 4 \
   --min-mapq 20 \
+  --min-unspliced-coverage-for-unique 0.2 \
   --bin-num 100 \
   --log-level INFO
 ```
@@ -110,6 +111,20 @@ by default. Ambiguous reads are reported in read-level and sample-level outputs 
 do not contribute to default transcript-level coverage. The body coverage TSV keeps
 raw `coverage`, `mean_normalized_coverage`, and `max_normalized_coverage`.
 
+The sample summary reports the default unique-read completeness metrics and
+additional `all_assigned_*` columns computed from unique plus ambiguous
+assignments. Low-confidence reads are counted separately and are not treated as
+assigned transcript evidence.
+
+For large BAM files, the command streams read-level output and aggregate coverage
+instead of keeping every read object in memory. Median-like summary fields are
+exact while up to 100,000 values are retained for a metric; beyond that, IsoComp
+switches to an online quantile estimator, so very large runs should interpret
+those fields as streaming QC summaries rather than exact sorted medians.
+Plot histograms use bounded reservoir samples capped at 100,000 values, while
+their median markers use the same online summary. The read-body heatmap uses a
+bounded reservoir sample capped at 500 unique reads.
+
 The plots directory contains:
 
 - `transcript_body_coverage.png` / `.pdf`: aggregate assigned-read coverage curve
@@ -120,7 +135,7 @@ The plots directory contains:
 - `read_body_heatmap.png` / `.pdf`: read-by-bin heatmap for unique reads; each row
   shows the covered fraction of bins in that read's assigned transcript coordinates
   sorted by normalized 5' distance and then normalized 3' distance. Runs with more
-  than 500 unique reads are evenly downsampled after sorting.
+  than 500 unique reads are represented by a bounded reservoir sample.
 - `read_coverage_fraction.png` / `.pdf`: unique-read transcript coverage fraction
   distribution with the median marked.
 - `dist_to_5p.png` / `.pdf`: distance from projected read start to the transcript
@@ -153,6 +168,12 @@ Statuses:
 - `low_confidence`: candidates exist but top score is below `0.8`
 - `unassigned`: no candidate passes the candidate filters
 
+By default, a junctionless read on a spliced transcript must cover at least 20%
+of the assigned transcript to be called `unique`. This prevents very short
+single-exon fragments from being over-interpreted as isoform-level support. Tune
+this with `--min-unspliced-coverage-for-unique`, or set it to `0` to disable the
+guard.
+
 ## Development
 
 ```bash
@@ -170,6 +191,9 @@ data.
   IsoComp/RSeQC commands.
 - `benchmarks/synthetic_truth_benchmark.py` runs IsoComp synthetic truth
   evaluation, parameter sensitivity analysis, and RSeQC-style profile comparison.
+  Its sensitivity grid includes assignment thresholds, terminal tolerances,
+  full-length coverage thresholds, and `--min-unspliced-coverages`, the guard for
+  junctionless reads on spliced transcripts.
 - `scripts/run_synthetic_example.sh` is the recommended one-command smoke test
   for users and reviewers.
 - `docs/software_availability.md` contains the release checklist and manuscript

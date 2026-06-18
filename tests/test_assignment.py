@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from isocomp.annotation import read_bed12
+from isocomp.annotation import parse_bed12_line, read_bed12
 from isocomp.assigner import assign_read, score_candidate, score_junctions
 from isocomp.candidate import CandidateHit, CandidateIndex
 from isocomp.models import ReadAlignment
@@ -92,6 +92,29 @@ def test_low_confidence_when_exon_chain_is_poor(bed12_path) -> None:
 
     assert score.final_score < 0.8
     assert assignment.status == "low_confidence"
+
+
+def test_short_unspliced_fragment_on_spliced_transcript_is_low_confidence() -> None:
+    spliced = parse_bed12_line(
+        "chr1\t100\t1200\tTlong\t0\t+\t100\t1200\t0\t3\t300,300,300\t0,400,800"
+    )
+    read = ReadAlignment(
+        read_id="short_internal",
+        chrom="chr1",
+        genomic_start=150,
+        genomic_end=200,
+        blocks=[(150, 200)],
+        junctions=[],
+        aligned_length=50,
+        mapq=60,
+        cigar="50M",
+        is_reverse=False,
+    )
+
+    assignment = assign_read(read, [CandidateHit(spliced, 50)])
+
+    assert assignment.status == "low_confidence"
+    assert assignment.transcript is None
 
 
 def test_assignment_score_does_not_penalize_truncated_but_compatible_read(bed12_path) -> None:

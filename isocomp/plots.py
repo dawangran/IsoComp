@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import math
+import random
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _MPLCONFIGDIR = Path(tempfile.gettempdir()) / "isocomp-matplotlib"
@@ -20,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .models import AssignmentResult, ReadMetrics
+from .metrics import OnlineNumericSummary
 
 JOURNAL_DPI = 300
 JOURNAL_RC_PARAMS = {
@@ -47,32 +51,70 @@ COLORS = {
 }
 
 
+@dataclass
+class BoundedPlotValues:
+    max_values: int = 100_000
+    values: list[float] = field(default_factory=list)
+    summary: OnlineNumericSummary = field(default_factory=OnlineNumericSummary)
+    seen_count: int = 0
+    rng: random.Random = field(default_factory=lambda: random.Random(0), repr=False)
+
+    def add(self, value: float | int) -> None:
+        numeric = float(value)
+        self.summary.add(numeric)
+        self.seen_count += 1
+        if len(self.values) < self.max_values:
+            self.values.append(numeric)
+            return
+
+        replacement_index = self.rng.randrange(self.seen_count)
+        if replacement_index < self.max_values:
+            self.values[replacement_index] = numeric
+
+
+@dataclass
+class PlotData:
+    coverage_fractions: BoundedPlotValues = field(default_factory=BoundedPlotValues)
+    dist_to_5p: BoundedPlotValues = field(default_factory=BoundedPlotValues)
+    dist_to_3p: BoundedPlotValues = field(default_factory=BoundedPlotValues)
+    unique_read_count: int = 0
+    unique_5p_complete_count: int = 0
+    unique_3p_complete_count: int = 0
+    unique_full_length_like_count: int = 0
+    read_body_rows: list[tuple[str, str, float, float, np.ndarray]] = field(default_factory=list)
+    read_body_row_seen_count: int = 0
+    read_body_row_rng: random.Random = field(default_factory=lambda: random.Random(1), repr=False)
+
+
 def write_plots(
     plots_dir: Path,
     read_metrics: list[ReadMetrics],
     body_coverage: np.ndarray,
     per_transcript_coverage: dict[str, np.ndarray] | None = None,
     assignments: list[AssignmentResult] | None = None,
+    plot_data: PlotData | None = None,
 ) -> None:
     plots_dir.mkdir(parents=True, exist_ok=True)
+    if plot_data is None:
+        plot_data = build_plot_data(
+            read_metrics,
+            assignments or [],
+            bin_num=len(body_coverage),
+        )
     with plt.rc_context(JOURNAL_RC_PARAMS):
         _plot_body_coverage(plots_dir / "transcript_body_coverage.png", body_coverage)
         _plot_transcript_body_heatmap(
             plots_dir / "transcript_body_heatmap.png",
             per_transcript_coverage or {},
         )
-        _plot_read_body_heatmap(
+        _plot_read_body_heatmap_from_rows(
             plots_dir / "read_body_heatmap.png",
-            assignments or [],
+            plot_data.read_body_rows,
             bin_num=len(body_coverage),
         )
         _plot_hist(
             plots_dir / "read_coverage_fraction.png",
-            [
-                item.coverage_fraction
-                for item in read_metrics
-                if item.assignment_status == "unique" and item.coverage_fraction is not None
-            ],
+            plot_data.coverage_fractions,
             "Transcript coverage fraction",
             "Read count",
             bins=30,
@@ -80,27 +122,75 @@ def write_plots(
         )
         _plot_hist(
             plots_dir / "dist_to_5p.png",
-            [
-                item.dist_to_5p
-                for item in read_metrics
-                if item.assignment_status == "unique" and item.dist_to_5p is not None
-            ],
+            plot_data.dist_to_5p,
             "Distance to 5' end (bp)",
             "Read count",
             bins=30,
         )
         _plot_hist(
             plots_dir / "dist_to_3p.png",
-            [
-                item.dist_to_3p
-                for item in read_metrics
-                if item.assignment_status == "unique" and item.dist_to_3p is not None
-            ],
+            plot_data.dist_to_3p,
             "Distance to 3' end (bp)",
             "Read count",
             bins=30,
         )
-        _plot_full_length_fraction(plots_dir / "full_length_fraction.png", read_metrics)
+        _plot_full_length_fraction_from_counts(
+            plots_dir / "full_length_fraction.png",
+            plot_data,
+        )
+
+
+def build_plot_data(
+    read_metrics: list[ReadMetrics],
+    assignments: list[AssignmentResult],
+    *,
+    bin_num: int,
+    max_read_heatmap_rows: int = 500,
+) -> PlotData:
+    plot_data = PlotData()
+    assignment_by_read = {assignment.read_id: assignment for assignment in assignments}
+    for metric in read_metrics:
+        update_plot_data(
+            plot_data,
+            metric,
+            assignment_by_read.get(metric.read_id),
+            bin_num=bin_num,
+            max_read_heatmap_rows=max_read_heatmap_rows,
+        )
+    return plot_data
+
+
+def update_plot_data(
+    plot_data: PlotData,
+    metric: ReadMetrics,
+    assignment: AssignmentResult | None,
+    *,
+    bin_num: int,
+    max_read_heatmap_rows: int = 500,
+) -> None:
+    if metric.assignment_status != "unique":
+        return
+    plot_data.unique_read_count += 1
+    if metric.coverage_fraction is not None:
+        plot_data.coverage_fractions.add(metric.coverage_fraction)
+    if metric.dist_to_5p is not None:
+        plot_data.dist_to_5p.add(metric.dist_to_5p)
+    if metric.dist_to_3p is not None:
+        plot_data.dist_to_3p.add(metric.dist_to_3p)
+    if metric.is_5p_complete is True:
+        plot_data.unique_5p_complete_count += 1
+    if metric.is_3p_complete is True:
+        plot_data.unique_3p_complete_count += 1
+    if metric.is_full_length_like:
+        plot_data.unique_full_length_like_count += 1
+
+    row = _assignment_to_read_body_row(assignment, bin_num=bin_num)
+    if row is not None:
+        _add_read_body_row(
+            plot_data,
+            row,
+            max_read_heatmap_rows=max_read_heatmap_rows,
+        )
 
 
 def _plot_body_coverage(path: Path, coverage: np.ndarray) -> None:
@@ -174,38 +264,42 @@ def _plot_transcript_body_heatmap(
     _save_figure(fig, path)
 
 
-def _plot_read_body_heatmap(
+def _assignment_to_read_body_row(
+    assignment: AssignmentResult | None,
+    *,
+    bin_num: int,
+) -> tuple[str, str, float, float, np.ndarray] | None:
+    if assignment is None:
+        return None
+    if assignment.status != "unique" or assignment.transcript is None or assignment.projection is None:
+        return None
+    projection = assignment.projection
+    if projection.read_start_tx is None or projection.read_end_tx is None:
+        return None
+    transcript_length = assignment.transcript.transcript_length
+    if transcript_length <= 0:
+        return None
+    row = np.zeros(bin_num, dtype=float)
+    for interval in projection.intervals:
+        _add_interval_to_bins(row, interval, transcript_length)
+    start_fraction = projection.read_start_tx / transcript_length
+    dist_3p_fraction = (transcript_length - projection.read_end_tx) / transcript_length
+    return (
+        assignment.read_id,
+        assignment.transcript.transcript_id,
+        start_fraction,
+        dist_3p_fraction,
+        row,
+    )
+
+
+def _plot_read_body_heatmap_from_rows(
     path: Path,
-    assignments: list[AssignmentResult],
+    rows: list[tuple[str, str, float, float, np.ndarray]],
     *,
     bin_num: int,
     max_rows: int = 500,
 ) -> None:
-    rows: list[tuple[str, str, float, float, np.ndarray]] = []
-    for assignment in assignments:
-        if assignment.status != "unique" or assignment.transcript is None or assignment.projection is None:
-            continue
-        projection = assignment.projection
-        if projection.read_start_tx is None or projection.read_end_tx is None:
-            continue
-        transcript_length = assignment.transcript.transcript_length
-        if transcript_length <= 0:
-            continue
-        row = np.zeros(bin_num, dtype=float)
-        for interval in projection.intervals:
-            _add_interval_to_bins(row, interval, transcript_length)
-        start_fraction = projection.read_start_tx / transcript_length
-        dist_3p_fraction = (transcript_length - projection.read_end_tx) / transcript_length
-        rows.append(
-            (
-                assignment.read_id,
-                assignment.transcript.transcript_id,
-                start_fraction,
-                dist_3p_fraction,
-                row,
-            )
-        )
-
     rows.sort(key=lambda item: (item[2], item[3], item[1], item[0]))
     rows = _evenly_downsample_rows(rows, max_rows)
 
@@ -250,7 +344,7 @@ def _plot_read_body_heatmap(
 
 def _plot_hist(
     path: Path,
-    values: list[float | int],
+    values: BoundedPlotValues,
     xlabel: str,
     ylabel: str,
     *,
@@ -258,16 +352,22 @@ def _plot_hist(
     range_: tuple[float, float] | None = None,
 ) -> None:
     fig, ax = plt.subplots(figsize=(3.4, 2.6))
-    if values:
+    sampled_values = values.values
+    if sampled_values:
+        weights = None
+        if values.seen_count > len(sampled_values):
+            scale = values.seen_count / len(sampled_values)
+            weights = np.full(len(sampled_values), scale, dtype=float)
         ax.hist(
-            values,
+            sampled_values,
             bins=bins,
             range=range_,
+            weights=weights,
             color=COLORS["blue"],
             edgecolor="white",
             linewidth=0.5,
         )
-        _add_median_marker(ax, values)
+        _add_median_marker(ax, values.summary.median())
     else:
         ax.hist([], bins=bins, range=range_, color=COLORS["blue"], edgecolor="white")
         _empty_panel(ax, "No uniquely assigned reads")
@@ -305,6 +405,54 @@ def _plot_full_length_fraction(path: Path, read_metrics: list[ReadMetrics]) -> N
     _save_figure(fig, path)
 
 
+def _plot_full_length_fraction_from_counts(path: Path, plot_data: PlotData) -> None:
+    unique_count = plot_data.unique_read_count
+    fractions = [
+        safe_fraction(plot_data.unique_5p_complete_count, unique_count),
+        safe_fraction(plot_data.unique_3p_complete_count, unique_count),
+        safe_fraction(plot_data.unique_full_length_like_count, unique_count),
+    ]
+    labels = ["5' complete", "3' complete", "Full-length\nlike"]
+    colors = [COLORS["blue"], COLORS["green"], COLORS["vermillion"]]
+    fig, ax = plt.subplots(figsize=(3.4, 2.6))
+    x = np.arange(len(fractions))
+    ax.bar(x, fractions, color=colors, edgecolor="white", linewidth=0.6, width=0.68)
+    for index, value in enumerate(fractions):
+        ax.text(index, min(value + 0.035, 1.02), f"{value:.2f}", ha="center", va="bottom", fontsize=7)
+    if unique_count == 0:
+        _empty_panel(ax, "No uniquely assigned reads", y=0.58)
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Fraction of unique reads")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    _style_axis(ax, grid_axis="y")
+    _save_figure(fig, path)
+
+
+def safe_fraction(numerator: int, denominator: int) -> float:
+    if denominator == 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _add_read_body_row(
+    plot_data: PlotData,
+    row: tuple[str, str, float, float, np.ndarray],
+    *,
+    max_read_heatmap_rows: int,
+) -> None:
+    plot_data.read_body_row_seen_count += 1
+    if len(plot_data.read_body_rows) < max_read_heatmap_rows:
+        plot_data.read_body_rows.append(row)
+        return
+
+    replacement_index = plot_data.read_body_row_rng.randrange(
+        plot_data.read_body_row_seen_count
+    )
+    if replacement_index < max_read_heatmap_rows:
+        plot_data.read_body_rows[replacement_index] = row
+
+
 def _style_axis(ax: plt.Axes, *, grid_axis: str | None = None) -> None:
     for spine_name in ("top", "right"):
         ax.spines[spine_name].set_visible(False)
@@ -336,8 +484,9 @@ def _empty_panel(ax: plt.Axes, message: str, *, y: float = 0.5) -> None:
     )
 
 
-def _add_median_marker(ax: plt.Axes, values: list[float | int]) -> None:
-    median_value = float(np.median(values))
+def _add_median_marker(ax: plt.Axes, median_value: float) -> None:
+    if math.isnan(median_value):
+        return
     ax.axvline(
         median_value,
         color=COLORS["vermillion"],
