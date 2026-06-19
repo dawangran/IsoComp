@@ -75,6 +75,7 @@ Common HPC-friendly options:
 isocomp \
   --bam sample.bam \
   --annotation transcripts.bed12 \
+  --annotation-format auto \
   --out sample.isocomp \
   --threads 4 \
   --min-mapq 20 \
@@ -90,10 +91,24 @@ you intentionally want to replace a previous run.
 
 - `--bam`: genome-aligned long-read RNA BAM. IsoComp streams records with
   `pysam.AlignmentFile(...).fetch(until_eof=True)`, so a BAM index is not required.
-- `--annotation`: BED12 transcript annotation. Coordinates are interpreted as
-  0-based, half-open.
-- BED12 `name` is used as `transcript_id` in v0.1. `gene_id` is left empty until
-  GTF or explicit transcript-to-gene mapping is added.
+- `--annotation`: BED12 or GTF transcript annotation.
+- `--annotation-format`: `auto`, `bed12`, or `gtf`. The default `auto` uses the
+  file suffix first and then inspects the first data line when needed.
+- BED12 coordinates are interpreted as 0-based, half-open. BED12 `name` is used
+  as `transcript_id`, and `gene_id` is empty unless a later mapping is added.
+- GTF uses only `exon` records. GTF coordinates are converted from 1-based,
+  closed to IsoComp's internal 0-based, half-open coordinates. `gene_id` and
+  `transcript_id` are read from the GTF attributes column.
+
+Example GTF input:
+
+```bash
+isocomp \
+  --bam sample.bam \
+  --annotation transcripts.gtf \
+  --annotation-format gtf \
+  --out sample.isocomp
+```
 
 ## Outputs
 
