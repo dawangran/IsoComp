@@ -14,7 +14,7 @@ import pandas as pd
 import typer
 
 from . import __version__
-from .annotation import AnnotationError, read_bed12
+from .annotation import AnnotationError, read_annotation
 from .assigner import assign_read
 from .bam_parser import BamParserError, iter_read_alignments
 from .candidate import CandidateIndex
@@ -49,7 +49,11 @@ LOGGER = logging.getLogger("isocomp")
 def run(
     ctx: typer.Context,
     bam: Annotated[Path | None, typer.Option("--bam", help="Genome-aligned long-read RNA BAM.")] = None,
-    annotation: Annotated[Path | None, typer.Option("--annotation", help="BED12 transcript annotation.")] = None,
+    annotation: Annotated[Path | None, typer.Option("--annotation", help="BED12 or GTF transcript annotation.")] = None,
+    annotation_format: Annotated[
+        str,
+        typer.Option("--annotation-format", help="One of auto, bed12, gtf."),
+    ] = "auto",
     out: Annotated[str | None, typer.Option("--out", help="Output prefix.")] = None,
     bin_num: Annotated[int, typer.Option("--bin-num", min=1, help="Number of transcript body bins.")] = 100,
     min_mapq: Annotated[int, typer.Option("--min-mapq", min=0, help="Minimum mapping quality.")] = 20,
@@ -92,6 +96,7 @@ def run(
         run_pipeline(
             bam=bam,
             annotation=annotation,
+            annotation_format=annotation_format,
             out=out,
             bin_num=bin_num,
             min_mapq=min_mapq,
@@ -113,6 +118,7 @@ def run_pipeline(
     *,
     bam: Path,
     annotation: Path,
+    annotation_format: str,
     out: str,
     bin_num: int,
     min_mapq: int,
@@ -125,10 +131,16 @@ def run_pipeline(
     threads: int,
     force: bool,
 ) -> None:
+    annotation_format = annotation_format.lower()
     if strandness not in {"unstranded", "forward", "reverse", "auto"}:
         raise ValueError(
             "Invalid --strandness. Expected one of unstranded, forward, reverse, auto; "
             f"got {strandness!r}"
+        )
+    if annotation_format not in {"auto", "bed12", "gtf"}:
+        raise ValueError(
+            "Invalid --annotation-format. Expected one of auto, bed12, gtf; "
+            f"got {annotation_format!r}"
         )
     if not 0 <= min_unspliced_coverage_for_unique <= 1:
         raise ValueError(
@@ -139,7 +151,7 @@ def run_pipeline(
     paths = output_paths(out)
     ensure_outputs_available(paths, force=force)
     LOGGER.info("Reading annotation: %s", annotation)
-    transcripts = read_bed12(annotation)
+    transcripts = read_annotation(annotation, annotation_format)
     LOGGER.info("Loaded %d transcripts", len(transcripts))
     candidate_index = CandidateIndex(transcripts)
 
@@ -251,6 +263,7 @@ def run_pipeline(
             "parameters": {
                 "bam": str(bam),
                 "annotation": str(annotation),
+                "annotation_format": annotation_format,
                 "out": out,
                 "bin_num": bin_num,
                 "min_mapq": min_mapq,

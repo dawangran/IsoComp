@@ -97,3 +97,44 @@ def test_cli_pipeline_smoke(tmp_path: Path, bed12_path: Path, synthetic_bam: Pat
     assert round(float(coverage["mean_normalized_coverage"].mean()), 6) == 1.0
     assert round(float(coverage["max_normalized_coverage"].max()), 6) == 1.0
     assert stats["parameters"]["bin_num"] == 10
+    assert stats["parameters"]["annotation_format"] == "auto"
+
+
+def test_cli_pipeline_accepts_gtf_annotation(
+    tmp_path: Path,
+    gtf_path: Path,
+    synthetic_bam: Path,
+) -> None:
+    out_prefix = tmp_path / "sample_gtf.isocomp"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--bam",
+            str(synthetic_bam),
+            "--annotation",
+            str(gtf_path),
+            "--annotation-format",
+            "gtf",
+            "--out",
+            str(out_prefix),
+            "--bin-num",
+            "10",
+            "--min-overlap",
+            "50",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    read_assignment = Path(f"{out_prefix}.read_assignment.tsv")
+    assignment_stats = Path(f"{out_prefix}.assignment_stats.json")
+    reads = pd.read_csv(read_assignment, sep="\t")
+    stats = json.loads(assignment_stats.read_text(encoding="utf-8"))
+
+    statuses = dict(zip(reads["read_id"], reads["assignment_status"]))
+    assert statuses["full_pos"] == "unique"
+    assert statuses["full_neg"] == "unique"
+    assert statuses["low_conf"] == "low_confidence"
+    full_pos = reads.loc[reads["read_id"] == "full_pos"].iloc[0]
+    assert full_pos["gene_id"] == "Gpos"
+    assert stats["parameters"]["annotation_format"] == "gtf"

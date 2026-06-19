@@ -24,6 +24,26 @@ def bed12_path(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def gtf_path(tmp_path: Path) -> Path:
+    path = tmp_path / "transcripts.gtf"
+    path.write_text(
+        "\n".join(
+            [
+                'chr1\tIsoComp\texon\t101\t200\t.\t+\t.\tgene_id "Gpos"; transcript_id "Tpos";',
+                'chr1\tIsoComp\texon\t301\t400\t.\t+\t.\tgene_id "Gpos"; transcript_id "Tpos";',
+                'chr1\tIsoComp\texon\t501\t600\t.\t+\t.\tgene_id "Gamb"; transcript_id "Tamb1";',
+                'chr1\tIsoComp\texon\t501\t600\t.\t+\t.\tgene_id "Gamb"; transcript_id "Tamb2";',
+                'chr2\tIsoComp\texon\t101\t200\t.\t-\t.\tgene_id "Gneg"; transcript_id "Tneg";',
+                'chr2\tIsoComp\texon\t301\t400\t.\t-\t.\tgene_id "Gneg"; transcript_id "Tneg";',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def write_bam(path: Path, records: list[dict[str, object]]) -> Path:
     header = {
         "HD": {"VN": "1.0"},
@@ -67,4 +87,3 @@ def synthetic_bam(tmp_path: Path) -> Path:
             {"name": "full_neg", "chrom": "chr2", "start": 100, "cigar": [(0, 100), (3, 100), (0, 100)], "flag": 16},
         ],
     )
-
