@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from isocomp.plots import BoundedPlotValues, PlotData, _add_read_body_row
+from isocomp.plots import (
+    BoundedPlotValues,
+    PlotData,
+    _add_read_body_row,
+    _distance_display_upper,
+)
 
 
 def test_bounded_plot_values_keep_memory_bounded_and_summary_online() -> None:
@@ -29,3 +34,13 @@ def test_read_body_rows_keep_memory_bounded() -> None:
 
     assert plot_data.read_body_row_seen_count == 20
     assert len(plot_data.read_body_rows) == 5
+
+
+def test_distance_display_upper_ignores_extreme_tail() -> None:
+    values = list(range(100)) + [1_000_000]
+
+    assert _distance_display_upper(values, tolerance=100) == 200
+
+
+def test_distance_display_upper_keeps_tolerance_visible() -> None:
+    assert _distance_display_upper([0, 10, 20], tolerance=1_500) >= 3_000

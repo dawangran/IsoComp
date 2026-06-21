@@ -7,11 +7,15 @@ from isocomp.assigner import assign_read
 from isocomp.candidate import CandidateHit, CandidateIndex
 from isocomp.metrics import (
     OnlineNumericSummary,
+    SampleMetricAccumulator,
+    TranscriptMetricAccumulator,
     build_read_metrics,
     compute_transcript_body_coverage,
     summarize_sample,
+    summarize_sample_accumulator,
     summarize_transcripts,
     update_summary_for_metric,
+    update_sample_accumulator,
 )
 from isocomp.models import AssignmentResult, ReadAlignment, RunSummary
 from isocomp.projection import project_blocks_to_transcript
@@ -48,6 +52,32 @@ def test_online_numeric_summary_is_exact_for_small_samples() -> None:
 
     assert summary.mean() == 2.75
     assert summary.median() == 2.5
+
+
+def test_online_numeric_summary_does_not_repopulate_exact_values_after_limit() -> None:
+    summary = OnlineNumericSummary(max_exact_values=5)
+    for value in [0, 0, 0, 1000, 1000, 1000, 1000]:
+        summary.add(value)
+
+    assert summary.exact_values == []
+    assert summary.median() == summary.median_estimator.median()
+
+
+def test_transcript_numeric_summaries_use_constant_memory() -> None:
+    accumulator = TranscriptMetricAccumulator()
+    for value in range(20):
+        accumulator.coverage_values.add(value / 20)
+        accumulator.dist_5p.add(value)
+        accumulator.dist_3p.add(value)
+
+    for summary in [
+        accumulator.coverage_values,
+        accumulator.dist_5p,
+        accumulator.dist_3p,
+    ]:
+        assert summary.max_exact_values == 0
+        assert summary.exact_values == []
+        assert len(summary.median_estimator.initial_values) == 5
 
 
 def test_ambiguous_reads_do_not_contribute_to_body_coverage(bed12_path) -> None:
@@ -89,8 +119,8 @@ def test_ambiguous_reads_do_not_contribute_to_body_coverage(bed12_path) -> None:
     assert unique_assignment.status == "unique"
     assert ambiguous_assignment.status == "ambiguous"
     assert np.allclose(per_transcript["Tpos"], np.ones(10))
-    assert np.allclose(per_transcript["Tamb1"], np.zeros(10))
-    assert np.allclose(per_transcript["Tamb2"], np.zeros(10))
+    assert "Tamb1" not in per_transcript
+    assert "Tamb2" not in per_transcript
     assert np.allclose(aggregate, np.ones(10))
 
 
@@ -209,3 +239,148 @@ def test_negative_strand_metrics_report_transcript_terminal_softclips() -> None:
 
     assert metric.softclip_5p == 10
     assert metric.softclip_3p == 5
+
+
+def test_unknown_strand_read_is_excluded_from_terminal_metrics_and_body_coverage() -> None:
+    transcript = parse_bed12_line(
+        "chr3\t100\t200\tTunknown\t0\t.\t100\t200\t0\t1\t100\t0"
+    )
+    read = ReadAlignment(
+        read_id="unknown",
+        chrom="chr3",
+        genomic_start=100,
+        genomic_end=200,
+        blocks=[(100, 200)],
+        junctions=[],
+        aligned_length=100,
+        mapq=60,
+        cigar="100M",
+        is_reverse=False,
+    )
+    assignment = assign_read(read, [CandidateHit(transcript, 100)])
+    metric = build_read_metrics(read, assignment, tss_tol=100, tes_tol=100)
+    aggregate, per_transcript = compute_transcript_body_coverage(
+        {transcript.transcript_id: transcript},
+        [assignment],
+        bin_num=10,
+    )
+
+    assert assignment.status == "unique"
+    assert metric.coverage_fraction == 1.0
+    assert metric.is_5p_complete is None
+    assert metric.is_3p_complete is None
+    assert metric.is_full_length_like is False
+    assert not np.any(aggregate)
+    assert per_transcript == {}
+
+
+def test_unknown_strand_read_does_not_dilute_terminal_fractions() -> None:
+    known = parse_bed12_line(
+        "chr1\t100\t200\tTknown\t0\t+\t100\t200\t0\t1\t100\t0"
+    )
+    unknown = parse_bed12_line(
+        "chr2\t100\t200\tTunknown\t0\t.\t100\t200\t0\t1\t100\t0"
+    )
+    accumulator = SampleMetricAccumulator()
+    for transcript in [known, unknown]:
+        read = ReadAlignment(
+            read_id=transcript.transcript_id,
+            chrom=transcript.chrom,
+            genomic_start=100,
+            genomic_end=200,
+            blocks=[(100, 200)],
+            junctions=[],
+            aligned_length=100,
+            mapq=60,
+            cigar="100M",
+            is_reverse=False,
+        )
+        assignment = assign_read(read, [CandidateHit(transcript, 100)])
+        metric = build_read_metrics(read, assignment, tss_tol=100, tes_tol=100)
+        update_sample_accumulator(accumulator, metric)
+
+    row = summarize_sample_accumulator(
+        accumulator,
+        RunSummary(unique_assigned_reads=2, assigned_reads=2),
+        sample_name="sample",
+    )
+
+    assert row["terminal_evaluable_unique_reads"] == 1
+    assert row["5p_complete_fraction"] == 1.0
+    assert row["3p_complete_fraction"] == 1.0
+    assert row["full_length_like_fraction"] == 1.0
+
+
+def test_full_length_coverage_threshold_is_configurable(bed12_path) -> None:
+    transcript = read_bed12(bed12_path)["Tpos"]
+    read = ReadAlignment(
+        read_id="truncated_but_terminal",
+        chrom="chr1",
+        genomic_start=150,
+        genomic_end=400,
+        blocks=[(150, 200), (300, 400)],
+        junctions=[(200, 300)],
+        aligned_length=150,
+        mapq=60,
+        cigar="50M100N100M",
+        is_reverse=False,
+    )
+    assignment = assign_read(read, [CandidateHit(transcript, 150)])
+
+    strict = build_read_metrics(
+        read,
+        assignment,
+        tss_tol=100,
+        tes_tol=100,
+        full_length_coverage=0.8,
+    )
+    relaxed = build_read_metrics(
+        read,
+        assignment,
+        tss_tol=100,
+        tes_tol=100,
+        full_length_coverage=0.7,
+    )
+
+    assert strict.coverage_fraction == 0.75
+    assert strict.is_full_length_like is False
+    assert relaxed.is_full_length_like is True
+
+
+def test_terminal_anchor_rejects_tiny_spurious_terminal_overlap() -> None:
+    transcript = parse_bed12_line(
+        "chr1\t100\t1100\tTsingle\t0\t+\t100\t1100\t0\t1\t1000\t0"
+    )
+    read = ReadAlignment(
+        read_id="tiny_terminal_anchor",
+        chrom="chr1",
+        genomic_start=100,
+        genomic_end=800,
+        blocks=[(100, 101), (600, 800)],
+        junctions=[],
+        aligned_length=201,
+        mapq=60,
+        cigar="1M499D200M",
+        is_reverse=False,
+    )
+    assignment = assign_read(read, [CandidateHit(transcript, 201)])
+
+    guarded = build_read_metrics(
+        read,
+        assignment,
+        tss_tol=100,
+        tes_tol=100,
+        min_terminal_anchor=10,
+    )
+    legacy = build_read_metrics(
+        read,
+        assignment,
+        tss_tol=100,
+        tes_tol=100,
+        min_terminal_anchor=0,
+    )
+
+    assert guarded.dist_to_5p == 0
+    assert guarded.terminal_anchor_5p == 1
+    assert guarded.is_5p_complete is False
+    assert legacy.is_5p_complete is True

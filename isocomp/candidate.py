@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 try:
@@ -53,6 +54,16 @@ class CandidateHit:
     exonic_overlap: int
 
 
+@dataclass(frozen=True)
+class StrandInferenceResult:
+    resolved_strandness: str
+    scanned_reads: int
+    informative_reads: int
+    forward_votes: int
+    reverse_votes: int
+    dominant_fraction: float
+
+
 class CandidateIndex:
     def __init__(self, transcripts: dict[str, Transcript]) -> None:
         self.transcripts = transcripts
@@ -95,6 +106,69 @@ class CandidateIndex:
 
         hits.sort(key=lambda hit: (-hit.exonic_overlap, hit.transcript.transcript_id))
         return hits
+
+
+def infer_library_strandness(
+    reads: Iterable[ReadAlignment],
+    candidate_index: CandidateIndex,
+    *,
+    min_overlap: int = 50,
+    max_reads: int = 100_000,
+    min_informative_reads: int = 100,
+    min_dominant_fraction: float = 0.8,
+) -> StrandInferenceResult:
+    if max_reads < 1:
+        raise ValueError("max_reads must be >= 1")
+    if min_informative_reads < 1:
+        raise ValueError("min_informative_reads must be >= 1")
+    if not 0.5 <= min_dominant_fraction <= 1:
+        raise ValueError("min_dominant_fraction must be between 0.5 and 1")
+
+    scanned_reads = 0
+    forward_votes = 0
+    reverse_votes = 0
+    for read in reads:
+        scanned_reads += 1
+        hits = candidate_index.query(
+            read,
+            min_overlap=min_overlap,
+            strandness="unstranded",
+        )
+        candidate_strands = {
+            hit.transcript.strand
+            for hit in hits
+            if hit.transcript.strand in {"+", "-"}
+        }
+        if len(candidate_strands) == 1:
+            transcript_strand = next(iter(candidate_strands))
+            read_strand = "-" if read.is_reverse else "+"
+            if read_strand == transcript_strand:
+                forward_votes += 1
+            else:
+                reverse_votes += 1
+        if scanned_reads >= max_reads:
+            break
+
+    informative_reads = forward_votes + reverse_votes
+    dominant_votes = max(forward_votes, reverse_votes)
+    dominant_fraction = (
+        dominant_votes / informative_reads if informative_reads else 0.0
+    )
+    resolved = "unstranded"
+    if (
+        informative_reads >= min_informative_reads
+        and dominant_fraction >= min_dominant_fraction
+    ):
+        resolved = "forward" if forward_votes > reverse_votes else "reverse"
+
+    return StrandInferenceResult(
+        resolved_strandness=resolved,
+        scanned_reads=scanned_reads,
+        informative_reads=informative_reads,
+        forward_votes=forward_votes,
+        reverse_votes=reverse_votes,
+        dominant_fraction=dominant_fraction,
+    )
 
 
 def _auto_strand_hits(read: ReadAlignment, hits: list[CandidateHit]) -> list[CandidateHit]:

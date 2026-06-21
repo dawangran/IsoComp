@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from isocomp.annotation import parse_bed12_line, read_bed12
-from isocomp.candidate import CandidateIndex
+from isocomp.candidate import CandidateIndex, infer_library_strandness
 from isocomp.models import ReadAlignment
 
 
@@ -80,3 +80,66 @@ def test_candidate_lookup_auto_uses_clear_orientation() -> None:
 
     assert [hit.transcript.transcript_id for hit in reverse_hits] == ["Tplus"]
     assert [hit.transcript.transcript_id for hit in auto_hits] == ["Tplus"]
+
+
+def test_library_strandness_inference_resolves_forward_protocol() -> None:
+    transcript = parse_bed12_line(
+        "chr1\t100\t200\tTplus\t0\t+\t100\t200\t0\t1\t100\t0"
+    )
+    reads = [
+        ReadAlignment(
+            read_id=f"r{index}",
+            chrom="chr1",
+            genomic_start=100,
+            genomic_end=200,
+            blocks=[(100, 200)],
+            junctions=[],
+            aligned_length=100,
+            mapq=60,
+            cigar="100M",
+            is_reverse=False,
+        )
+        for index in range(4)
+    ]
+
+    result = infer_library_strandness(
+        reads,
+        CandidateIndex({transcript.transcript_id: transcript}),
+        min_overlap=50,
+        min_informative_reads=2,
+    )
+
+    assert result.resolved_strandness == "forward"
+    assert result.forward_votes == 4
+    assert result.reverse_votes == 0
+
+
+def test_library_strandness_inference_falls_back_when_votes_are_mixed() -> None:
+    transcript = parse_bed12_line(
+        "chr1\t100\t200\tTplus\t0\t+\t100\t200\t0\t1\t100\t0"
+    )
+    reads = [
+        ReadAlignment(
+            read_id=f"r{index}",
+            chrom="chr1",
+            genomic_start=100,
+            genomic_end=200,
+            blocks=[(100, 200)],
+            junctions=[],
+            aligned_length=100,
+            mapq=60,
+            cigar="100M",
+            is_reverse=bool(index % 2),
+        )
+        for index in range(4)
+    ]
+
+    result = infer_library_strandness(
+        reads,
+        CandidateIndex({transcript.transcript_id: transcript}),
+        min_overlap=50,
+        min_informative_reads=2,
+    )
+
+    assert result.resolved_strandness == "unstranded"
+    assert result.dominant_fraction == 0.5

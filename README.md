@@ -79,6 +79,10 @@ isocomp \
   --out sample.isocomp \
   --threads 4 \
   --min-mapq 20 \
+  --unique-threshold 0.8 \
+  --margin-threshold 0.1 \
+  --full-length-coverage 0.8 \
+  --min-terminal-anchor 10 \
   --min-unspliced-coverage-for-unique 0.2 \
   --bin-num 100 \
   --log-level INFO
@@ -99,6 +103,13 @@ you intentionally want to replace a previous run.
 - GTF uses only `exon` records. GTF coordinates are converted from 1-based,
   closed to IsoComp's internal 0-based, half-open coordinates. `gene_id` and
   `transcript_id` are read from the GTF attributes column.
+- Transcripts with unknown strand (`.`) can contribute assignment and coverage
+  fractions, but are excluded from directional 5'/3' metrics and body coverage.
+- `--strandness auto` samples up to 100,000 usable reads and resolves one
+  sample-level orientation when at least 100 informative reads support one mode
+  at 80% or greater. Otherwise it records and uses `unstranded`.
+- BAM and annotation reference names are checked before analysis. A complete
+  mismatch such as `chr1` versus `1` stops with an explicit error.
 
 Example GTF input:
 
@@ -129,13 +140,19 @@ raw `coverage`, `mean_normalized_coverage`, and `max_normalized_coverage`.
 The sample summary reports the default unique-read completeness metrics and
 additional `all_assigned_*` columns computed from unique plus ambiguous
 assignments. Low-confidence reads are counted separately and are not treated as
-assigned transcript evidence.
+assigned transcript evidence. `terminal_evaluable_unique_reads` and
+`terminal_evaluable_assigned_reads` expose the denominators used for terminal
+fractions when unknown-strand transcripts are present. Filtering counts include
+duplicate, low-MAPQ, empty-alignment, and usable reads.
 
 For large BAM files, the command streams read-level output and aggregate coverage
 instead of keeping every read object in memory. Median-like summary fields are
 exact while up to 100,000 values are retained for a metric; beyond that, IsoComp
 switches to an online quantile estimator, so very large runs should interpret
 those fields as streaming QC summaries rather than exact sorted medians.
+Transcript-level numeric summaries use constant-memory online medians from the
+first observation, and transcript body arrays are allocated only for transcripts
+that receive unique directional evidence.
 Plot histograms use bounded reservoir samples capped at 100,000 values, while
 their median markers use the same online summary. The read-body heatmap uses a
 bounded reservoir sample capped at 500 unique reads.
@@ -154,11 +171,13 @@ The plots directory contains:
 - `read_coverage_fraction.png` / `.pdf`: unique-read transcript coverage fraction
   distribution with the median marked.
 - `dist_to_5p.png` / `.pdf`: distance from projected read start to the transcript
-  5' end.
+  5' end. The display range follows the sampled 95th percentile, normally capped
+  near 2 kb; longer distances are pooled into the final bin.
 - `dist_to_3p.png` / `.pdf`: distance from projected read end to the transcript
-  3' end.
+  3' end, using the same tail-pooling display rule. Both terminal-distance plots
+  mark the configured completeness tolerance.
 - `full_length_fraction.png` / `.pdf`: 5' complete, 3' complete, and full-length-like
-  fractions among uniquely assigned reads.
+  fractions among terminal-evaluable uniquely assigned reads.
 
 PNG figures are written at 300 dpi. PDF copies are generated alongside them for
 journal workflows that prefer vector text and editable figure panels.
@@ -188,6 +207,13 @@ of the assigned transcript to be called `unique`. This prevents very short
 single-exon fragments from being over-interpreted as isoform-level support. Tune
 this with `--min-unspliced-coverage-for-unique`, or set it to `0` to disable the
 guard.
+
+The assignment and completeness thresholds are configurable with
+`--unique-threshold`, `--margin-threshold`, and `--full-length-coverage`.
+Terminal calls additionally require at least `--min-terminal-anchor` projected
+bases in the corresponding terminal window (default 10 bp). Set it to `0` to
+recover endpoint-only behavior. The JSON metadata records requested and resolved
+annotation formats and strandness.
 
 ## Development
 

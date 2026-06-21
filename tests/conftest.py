@@ -87,3 +87,19 @@ def synthetic_bam(tmp_path: Path) -> Path:
             {"name": "full_neg", "chrom": "chr2", "start": 100, "cigar": [(0, 100), (3, 100), (0, 100)], "flag": 16},
         ],
     )
+
+
+@pytest.fixture
+def forward_stranded_bam(tmp_path: Path) -> Path:
+    return write_bam(
+        tmp_path / "forward_reads.bam",
+        [
+            {
+                "name": f"forward_{index}",
+                "chrom": "chr1",
+                "start": 100,
+                "cigar": [(0, 100)],
+            }
+            for index in range(100)
+        ],
+    )

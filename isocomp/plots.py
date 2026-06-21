@@ -26,6 +26,8 @@ from .models import AssignmentResult, ReadMetrics
 from .metrics import OnlineNumericSummary
 
 JOURNAL_DPI = 300
+DISTANCE_PLOT_PERCENTILE = 95.0
+DISTANCE_PLOT_SOFT_MAX_BP = 2_000.0
 JOURNAL_RC_PARAMS = {
     "figure.dpi": 150,
     "savefig.dpi": JOURNAL_DPI,
@@ -78,6 +80,7 @@ class PlotData:
     dist_to_5p: BoundedPlotValues = field(default_factory=BoundedPlotValues)
     dist_to_3p: BoundedPlotValues = field(default_factory=BoundedPlotValues)
     unique_read_count: int = 0
+    unique_terminal_read_count: int = 0
     unique_5p_complete_count: int = 0
     unique_3p_complete_count: int = 0
     unique_full_length_like_count: int = 0
@@ -93,6 +96,8 @@ def write_plots(
     per_transcript_coverage: dict[str, np.ndarray] | None = None,
     assignments: list[AssignmentResult] | None = None,
     plot_data: PlotData | None = None,
+    tss_tol: int = 100,
+    tes_tol: int = 100,
 ) -> None:
     plots_dir.mkdir(parents=True, exist_ok=True)
     if plot_data is None:
@@ -120,19 +125,17 @@ def write_plots(
             bins=30,
             range_=(0, 1),
         )
-        _plot_hist(
+        _plot_distance_hist(
             plots_dir / "dist_to_5p.png",
             plot_data.dist_to_5p,
             "Distance to 5' end (bp)",
-            "Read count",
-            bins=30,
+            tolerance=tss_tol,
         )
-        _plot_hist(
+        _plot_distance_hist(
             plots_dir / "dist_to_3p.png",
             plot_data.dist_to_3p,
             "Distance to 3' end (bp)",
-            "Read count",
-            bins=30,
+            tolerance=tes_tol,
         )
         _plot_full_length_fraction_from_counts(
             plots_dir / "full_length_fraction.png",
@@ -177,6 +180,8 @@ def update_plot_data(
         plot_data.dist_to_5p.add(metric.dist_to_5p)
     if metric.dist_to_3p is not None:
         plot_data.dist_to_3p.add(metric.dist_to_3p)
+    if metric.is_5p_complete is not None and metric.is_3p_complete is not None:
+        plot_data.unique_terminal_read_count += 1
     if metric.is_5p_complete is True:
         plot_data.unique_5p_complete_count += 1
     if metric.is_3p_complete is True:
@@ -195,13 +200,19 @@ def update_plot_data(
 
 def _plot_body_coverage(path: Path, coverage: np.ndarray) -> None:
     normalized = _max_normalize_coverage(coverage)
-    fig, ax = plt.subplots(figsize=(3.6, 2.6))
+    fig, ax = plt.subplots(figsize=(4.2, 3.0))
     x = _bin_centers(len(normalized))
     if x.size:
-        ax.fill_between(x, normalized, color=COLORS["blue"], alpha=0.14, linewidth=0)
-        ax.plot(x, normalized, color=COLORS["blue"], linewidth=1.7)
+        ax.plot(
+            x,
+            normalized,
+            color=COLORS["blue"],
+            linewidth=2.0,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+        )
     ax.set_xlabel("Transcript position (5' to 3', %)")
-    ax.set_ylabel("Max-normalized coverage")
+    ax.set_ylabel("Relative coverage (max = 1)")
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 1.05)
     ax.set_xticks([0, 25, 50, 75, 100])
@@ -350,10 +361,20 @@ def _plot_hist(
     *,
     bins: int,
     range_: tuple[float, float] | None = None,
+    clip_to_range: bool = False,
+    reference_value: float | None = None,
 ) -> None:
     fig, ax = plt.subplots(figsize=(3.4, 2.6))
-    sampled_values = values.values
-    if sampled_values:
+    sampled_values = np.asarray(values.values, dtype=float)
+    has_upper_overflow = bool(
+        clip_to_range
+        and range_ is not None
+        and sampled_values.size
+        and np.any(sampled_values > range_[1])
+    )
+    if clip_to_range and range_ is not None:
+        sampled_values = np.clip(sampled_values, range_[0], range_[1])
+    if sampled_values.size:
         weights = None
         if values.seen_count > len(sampled_values):
             scale = values.seen_count / len(sampled_values)
@@ -367,7 +388,19 @@ def _plot_hist(
             edgecolor="white",
             linewidth=0.5,
         )
-        _add_median_marker(ax, values.summary.median())
+        if reference_value is not None:
+            ax.axvline(
+                reference_value,
+                color=COLORS["green"],
+                linestyle=(0, (2, 2)),
+                linewidth=1.0,
+                label=f"Tolerance ({reference_value:g} bp)",
+            )
+        _add_median_marker(
+            ax,
+            values.summary.median(),
+            display_upper=range_[1] if clip_to_range and range_ is not None else None,
+        )
     else:
         ax.hist([], bins=bins, range=range_, color=COLORS["blue"], edgecolor="white")
         _empty_panel(ax, "No uniquely assigned reads")
@@ -375,14 +408,67 @@ def _plot_hist(
         ax.set_xlim(*range_)
     else:
         ax.set_xlim(left=0)
+    if has_upper_overflow and range_ is not None:
+        xlabel = f"{xlabel}; >{range_[1]:g} pooled"
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     _style_axis(ax, grid_axis="y")
     _save_figure(fig, path)
 
 
+def _plot_distance_hist(
+    path: Path,
+    values: BoundedPlotValues,
+    xlabel: str,
+    *,
+    tolerance: int,
+) -> None:
+    display_upper = _distance_display_upper(values.values, tolerance=tolerance)
+    _plot_hist(
+        path,
+        values,
+        xlabel,
+        "Read count",
+        bins=40,
+        range_=(0.0, display_upper),
+        clip_to_range=True,
+        reference_value=float(tolerance),
+    )
+
+
+def _distance_display_upper(values: list[float], *, tolerance: int) -> float:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite) & (finite >= 0)]
+    percentile = (
+        float(np.percentile(finite, DISTANCE_PLOT_PERCENTILE))
+        if finite.size
+        else 0.0
+    )
+    target = max(
+        1.0,
+        2.0 * tolerance,
+        min(percentile, DISTANCE_PLOT_SOFT_MAX_BP),
+    )
+    return _nice_axis_upper(target)
+
+
+def _nice_axis_upper(value: float) -> float:
+    magnitude = 10 ** math.floor(math.log10(value))
+    normalized = value / magnitude
+    for step in (1.0, 2.0, 5.0, 10.0):
+        if normalized <= step:
+            return step * magnitude
+    return 10.0 * magnitude
+
+
 def _plot_full_length_fraction(path: Path, read_metrics: list[ReadMetrics]) -> None:
-    unique = [item for item in read_metrics if item.assignment_status == "unique"]
+    unique = [
+        item
+        for item in read_metrics
+        if item.assignment_status == "unique"
+        and item.is_5p_complete is not None
+        and item.is_3p_complete is not None
+    ]
     fractions = [
         sum(1 for item in unique if item.is_5p_complete) / len(unique) if unique else 0.0,
         sum(1 for item in unique if item.is_3p_complete) / len(unique) if unique else 0.0,
@@ -396,9 +482,9 @@ def _plot_full_length_fraction(path: Path, read_metrics: list[ReadMetrics]) -> N
     for index, value in enumerate(fractions):
         ax.text(index, min(value + 0.035, 1.02), f"{value:.2f}", ha="center", va="bottom", fontsize=7)
     if not unique:
-        _empty_panel(ax, "No uniquely assigned reads", y=0.58)
+        _empty_panel(ax, "No terminal-evaluable unique reads", y=0.58)
     ax.set_ylim(0, 1)
-    ax.set_ylabel("Fraction of unique reads")
+    ax.set_ylabel("Fraction of evaluable unique reads")
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     _style_axis(ax, grid_axis="y")
@@ -406,7 +492,7 @@ def _plot_full_length_fraction(path: Path, read_metrics: list[ReadMetrics]) -> N
 
 
 def _plot_full_length_fraction_from_counts(path: Path, plot_data: PlotData) -> None:
-    unique_count = plot_data.unique_read_count
+    unique_count = plot_data.unique_terminal_read_count
     fractions = [
         safe_fraction(plot_data.unique_5p_complete_count, unique_count),
         safe_fraction(plot_data.unique_3p_complete_count, unique_count),
@@ -420,9 +506,9 @@ def _plot_full_length_fraction_from_counts(path: Path, plot_data: PlotData) -> N
     for index, value in enumerate(fractions):
         ax.text(index, min(value + 0.035, 1.02), f"{value:.2f}", ha="center", va="bottom", fontsize=7)
     if unique_count == 0:
-        _empty_panel(ax, "No uniquely assigned reads", y=0.58)
+        _empty_panel(ax, "No terminal-evaluable unique reads", y=0.58)
     ax.set_ylim(0, 1)
-    ax.set_ylabel("Fraction of unique reads")
+    ax.set_ylabel("Fraction of evaluable unique reads")
     ax.set_xticks(x)
     ax.set_xticklabels(labels)
     _style_axis(ax, grid_axis="y")
@@ -484,15 +570,25 @@ def _empty_panel(ax: plt.Axes, message: str, *, y: float = 0.5) -> None:
     )
 
 
-def _add_median_marker(ax: plt.Axes, median_value: float) -> None:
+def _add_median_marker(
+    ax: plt.Axes,
+    median_value: float,
+    *,
+    display_upper: float | None = None,
+) -> None:
     if math.isnan(median_value):
         return
+    marker_value = median_value
+    label = "Median"
+    if display_upper is not None and median_value > display_upper:
+        marker_value = display_upper
+        label = f"Median > {display_upper:g} bp"
     ax.axvline(
-        median_value,
+        marker_value,
         color=COLORS["vermillion"],
         linestyle=(0, (3, 2)),
         linewidth=1.0,
-        label="Median",
+        label=label,
     )
     ax.legend(frameon=False, handlelength=1.6, loc="upper right")
 

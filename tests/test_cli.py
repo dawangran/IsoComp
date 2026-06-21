@@ -98,6 +98,13 @@ def test_cli_pipeline_smoke(tmp_path: Path, bed12_path: Path, synthetic_bam: Pat
     assert round(float(coverage["max_normalized_coverage"].max()), 6) == 1.0
     assert stats["parameters"]["bin_num"] == 10
     assert stats["parameters"]["annotation_format"] == "auto"
+    assert stats["parameters"]["resolved_annotation_format"] == "bed12"
+    assert stats["parameters"]["resolved_strandness"] == "unstranded"
+    assert stats["parameters"]["unique_threshold"] == 0.8
+    assert stats["parameters"]["margin_threshold"] == 0.1
+    assert stats["parameters"]["full_length_coverage"] == 0.8
+    assert stats["parameters"]["min_terminal_anchor"] == 10
+    assert summary["usable_reads"] == 7
 
 
 def test_cli_pipeline_accepts_gtf_annotation(
@@ -138,3 +145,38 @@ def test_cli_pipeline_accepts_gtf_annotation(
     full_pos = reads.loc[reads["read_id"] == "full_pos"].iloc[0]
     assert full_pos["gene_id"] == "Gpos"
     assert stats["parameters"]["annotation_format"] == "gtf"
+    assert stats["parameters"]["resolved_annotation_format"] == "gtf"
+
+
+def test_cli_auto_strandness_records_sample_level_resolution(
+    tmp_path: Path,
+    bed12_path: Path,
+    forward_stranded_bam: Path,
+) -> None:
+    out_prefix = tmp_path / "sample_auto.isocomp"
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "--bam",
+            str(forward_stranded_bam),
+            "--annotation",
+            str(bed12_path),
+            "--out",
+            str(out_prefix),
+            "--strandness",
+            "auto",
+            "--min-overlap",
+            "50",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    stats = json.loads(
+        Path(f"{out_prefix}.assignment_stats.json").read_text(encoding="utf-8")
+    )
+    parameters = stats["parameters"]
+    assert parameters["strandness"] == "auto"
+    assert parameters["resolved_strandness"] == "forward"
+    assert parameters["strand_inference"]["informative_reads"] == 100
+    assert parameters["strand_inference"]["dominant_fraction"] == 1.0
