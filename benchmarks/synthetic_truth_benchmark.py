@@ -826,6 +826,8 @@ def run_parameter_set(
             assignment,
             tss_tol=parameters.tss_tol,
             tes_tol=parameters.tes_tol,
+            full_length_coverage=parameters.coverage_threshold,
+            min_terminal_anchor=10,
         )
         truth_row = truth_by_read.loc[read.read_id]
         rows.append(prediction_row(metric, truth_row, parameters))
@@ -837,16 +839,8 @@ def prediction_row(
     truth_row: pd.Series,
     parameters: ParameterSet,
 ) -> dict[str, Any]:
-    pred_is_5p_complete = (
-        metric.dist_to_5p <= parameters.tss_tol
-        if metric.dist_to_5p is not None
-        else None
-    )
-    pred_is_3p_complete = (
-        metric.dist_to_3p <= parameters.tes_tol
-        if metric.dist_to_3p is not None
-        else None
-    )
+    pred_is_5p_complete = metric.is_5p_complete
+    pred_is_3p_complete = metric.is_3p_complete
     pred_full_length_like = bool(
         metric.assignment_status == "unique"
         and metric.coverage_fraction is not None

@@ -21,7 +21,7 @@ def project_blocks_to_transcript(
 
     merged = merge_intervals(projected)
     covered_bases = sum(end - start for start, end in merged)
-    if merged:
+    if merged and transcript.strand != ".":
         read_start_tx = min(start for start, _ in merged)
         read_end_tx = max(end for _, end in merged)
         dist_to_5p = read_start_tx
@@ -57,4 +57,3 @@ def _genomic_overlap_to_tx(
     if strand == "-":
         return tx_start + (genomic_end - end), tx_start + (genomic_end - start)
     return tx_start + (start - genomic_start), tx_start + (end - genomic_start)
-

@@ -46,3 +46,17 @@ def test_negative_projection_distinguishes_5p_and_3p_truncation() -> None:
     assert three_prime_projection.intervals == [(150, 200)]
     assert three_prime_projection.dist_to_5p == 150
     assert three_prime_projection.dist_to_3p == 0
+
+
+def test_unknown_strand_projection_does_not_report_terminal_coordinates() -> None:
+    transcript = parse_bed12_line(
+        "chr3\t100\t400\tTunknown\t0\t.\t100\t400\t0\t2\t100,100\t0,200"
+    )
+
+    projection = project_blocks_to_transcript([(100, 150)], transcript)
+
+    assert projection.coverage_fraction == 0.25
+    assert projection.read_start_tx is None
+    assert projection.read_end_tx is None
+    assert projection.dist_to_5p is None
+    assert projection.dist_to_3p is None

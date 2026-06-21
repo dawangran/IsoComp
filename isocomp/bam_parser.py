@@ -29,6 +29,17 @@ class BamParserError(ValueError):
     """Raised when BAM input cannot be read or interpreted."""
 
 
+def read_bam_reference_names(bam_path: str | Path) -> set[str]:
+    path = Path(bam_path)
+    if not path.exists():
+        raise FileNotFoundError(f"BAM file does not exist: {path}")
+    try:
+        with pysam.AlignmentFile(str(path), "rb") as bam:
+            return set(bam.references)
+    except OSError as exc:
+        raise BamParserError(f"Could not read BAM header from {path}: {exc}") from exc
+
+
 def iter_read_alignments(
     bam_path: str | Path,
     *,

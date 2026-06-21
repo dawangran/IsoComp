@@ -14,10 +14,10 @@ import pandas as pd
 import typer
 
 from . import __version__
-from .annotation import AnnotationError, read_annotation
+from .annotation import AnnotationError, infer_annotation_format, read_annotation
 from .assigner import assign_read
-from .bam_parser import BamParserError, iter_read_alignments
-from .candidate import CandidateIndex
+from .bam_parser import BamParserError, iter_read_alignments, read_bam_reference_names
+from .candidate import CandidateIndex, infer_library_strandness
 from .io import (
     OutputError,
     ensure_outputs_available,
@@ -61,6 +61,22 @@ def run(
     tes_tol: Annotated[int, typer.Option("--tes-tol", min=0, help="3' completeness tolerance in bp.")] = 100,
     min_overlap: Annotated[int, typer.Option("--min-overlap", min=1, help="Minimum exonic overlap in bp.")] = 50,
     junction_tol: Annotated[int, typer.Option("--junction-tol", min=0, help="Splice-site tolerance in bp.")] = 5,
+    unique_threshold: Annotated[
+        float,
+        typer.Option("--unique-threshold", min=0.0, max=1.0, help="Minimum top assignment score."),
+    ] = 0.8,
+    margin_threshold: Annotated[
+        float,
+        typer.Option("--margin-threshold", min=0.0, max=1.0, help="Minimum top-minus-second score margin."),
+    ] = 0.1,
+    full_length_coverage: Annotated[
+        float,
+        typer.Option("--full-length-coverage", min=0.0, max=1.0, help="Minimum transcript coverage for a full-length-like read."),
+    ] = 0.8,
+    min_terminal_anchor: Annotated[
+        int,
+        typer.Option("--min-terminal-anchor", min=0, help="Minimum aligned bases supporting each terminal call."),
+    ] = 10,
     min_unspliced_coverage_for_unique: Annotated[
         float,
         typer.Option(
@@ -104,6 +120,10 @@ def run(
             tes_tol=tes_tol,
             min_overlap=min_overlap,
             junction_tol=junction_tol,
+            unique_threshold=unique_threshold,
+            margin_threshold=margin_threshold,
+            full_length_coverage=full_length_coverage,
+            min_terminal_anchor=min_terminal_anchor,
             min_unspliced_coverage_for_unique=min_unspliced_coverage_for_unique,
             strandness=strandness,
             threads=threads,
@@ -126,6 +146,10 @@ def run_pipeline(
     tes_tol: int,
     min_overlap: int,
     junction_tol: int,
+    unique_threshold: float,
+    margin_threshold: float,
+    full_length_coverage: float,
+    min_terminal_anchor: int,
     min_unspliced_coverage_for_unique: float,
     strandness: str,
     threads: int,
@@ -151,9 +175,61 @@ def run_pipeline(
     paths = output_paths(out)
     ensure_outputs_available(paths, force=force)
     LOGGER.info("Reading annotation: %s", annotation)
-    transcripts = read_annotation(annotation, annotation_format)
+    resolved_annotation_format = (
+        infer_annotation_format(annotation)
+        if annotation_format == "auto"
+        else annotation_format
+    )
+    transcripts = read_annotation(annotation, resolved_annotation_format)
     LOGGER.info("Loaded %d transcripts", len(transcripts))
+    annotation_references = {transcript.chrom for transcript in transcripts.values()}
+    bam_references = read_bam_reference_names(bam)
+    shared_references = annotation_references & bam_references
+    if not shared_references:
+        raise BamParserError(
+            "BAM and annotation chromosome names do not overlap; "
+            "check conventions such as 'chr1' versus '1'"
+        )
+    missing_annotation_references = annotation_references - bam_references
+    if missing_annotation_references:
+        LOGGER.warning(
+            "%d annotation reference(s) are absent from the BAM header",
+            len(missing_annotation_references),
+        )
     candidate_index = CandidateIndex(transcripts)
+
+    resolved_strandness = strandness
+    strand_inference: dict[str, object] | None = None
+    if strandness == "auto":
+        inference_iter, _ = iter_read_alignments(
+            bam,
+            min_mapq=min_mapq,
+            threads=threads,
+        )
+        try:
+            inferred = infer_library_strandness(
+                inference_iter,
+                candidate_index,
+                min_overlap=min_overlap,
+            )
+        finally:
+            close = getattr(inference_iter, "close", None)
+            if close is not None:
+                close()
+        resolved_strandness = inferred.resolved_strandness
+        strand_inference = {
+            "scanned_reads": inferred.scanned_reads,
+            "informative_reads": inferred.informative_reads,
+            "forward_votes": inferred.forward_votes,
+            "reverse_votes": inferred.reverse_votes,
+            "dominant_fraction": inferred.dominant_fraction,
+        }
+        LOGGER.info(
+            "Resolved --strandness auto to %s using %d informative reads (dominant fraction %.3f)",
+            resolved_strandness,
+            inferred.informative_reads,
+            inferred.dominant_fraction,
+        )
 
     read_iter, filter_stats = iter_read_alignments(
         bam,
@@ -164,10 +240,7 @@ def run_pipeline(
     sample_accumulator = SampleMetricAccumulator()
     transcript_accumulators = init_transcript_accumulators(transcripts)
     aggregate_coverage = np.zeros(bin_num, dtype=float)
-    per_transcript_coverage = {
-        transcript_id: np.zeros(bin_num, dtype=float)
-        for transcript_id in transcripts
-    }
+    per_transcript_coverage: dict[str, np.ndarray] = {}
 
     from .plots import PlotData, update_plot_data, write_plots
 
@@ -196,12 +269,14 @@ def run_pipeline(
                 candidates = candidate_index.query(
                     read,
                     min_overlap=min_overlap,
-                    strandness=strandness,
+                    strandness=resolved_strandness,
                 )
                 assignment = assign_read(
                     read,
                     candidates,
                     junction_tol=junction_tol,
+                    unique_threshold=unique_threshold,
+                    margin_threshold=margin_threshold,
                     min_unspliced_coverage_for_unique=min_unspliced_coverage_for_unique,
                 )
                 metric = build_read_metrics(
@@ -209,9 +284,15 @@ def run_pipeline(
                     assignment,
                     tss_tol=tss_tol,
                     tes_tol=tes_tol,
+                    full_length_coverage=full_length_coverage,
+                    min_terminal_anchor=min_terminal_anchor,
                 )
                 update_summary_for_metric(summary, metric)
-                update_sample_accumulator(sample_accumulator, metric)
+                update_sample_accumulator(
+                    sample_accumulator,
+                    metric,
+                    full_length_coverage=full_length_coverage,
+                )
                 update_transcript_accumulators(transcript_accumulators, metric)
                 add_assignment_to_body_coverage(
                     aggregate_coverage,
@@ -239,6 +320,7 @@ def run_pipeline(
     summary.primary_reads = filter_stats.primary_reads
     summary.duplicate_reads = filter_stats.duplicate_reads
     summary.low_mapq_reads = filter_stats.low_mapq_reads
+    summary.empty_alignment_reads = filter_stats.empty_alignment_reads
     summary.usable_reads = filter_stats.usable_reads
 
     LOGGER.info("Parsed %d usable reads", summary.usable_reads)
@@ -264,6 +346,7 @@ def run_pipeline(
                 "bam": str(bam),
                 "annotation": str(annotation),
                 "annotation_format": annotation_format,
+                "resolved_annotation_format": resolved_annotation_format,
                 "out": out,
                 "bin_num": bin_num,
                 "min_mapq": min_mapq,
@@ -271,8 +354,14 @@ def run_pipeline(
                 "tes_tol": tes_tol,
                 "min_overlap": min_overlap,
                 "junction_tol": junction_tol,
+                "unique_threshold": unique_threshold,
+                "margin_threshold": margin_threshold,
+                "full_length_coverage": full_length_coverage,
+                "min_terminal_anchor": min_terminal_anchor,
                 "min_unspliced_coverage_for_unique": min_unspliced_coverage_for_unique,
                 "strandness": strandness,
+                "resolved_strandness": resolved_strandness,
+                "strand_inference": strand_inference,
                 "threads": threads,
             },
             "counts": sample_row,
@@ -285,6 +374,8 @@ def run_pipeline(
         per_transcript_coverage=per_transcript_coverage,
         assignments=[],
         plot_data=plot_data,
+        tss_tol=tss_tol,
+        tes_tol=tes_tol,
     )
     LOGGER.info("IsoComp completed: %s", out)
 

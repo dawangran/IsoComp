@@ -141,6 +141,8 @@ class ReadMetrics:
     coverage_fraction: float | None
     dist_to_5p: int | None
     dist_to_3p: int | None
+    terminal_anchor_5p: int | None
+    terminal_anchor_3p: int | None
     is_5p_complete: bool | None
     is_3p_complete: bool | None
     is_full_length_like: bool
@@ -171,6 +173,7 @@ class RunSummary:
     primary_reads: int = 0
     duplicate_reads: int = 0
     low_mapq_reads: int = 0
+    empty_alignment_reads: int = 0
     usable_reads: int = 0
     assigned_reads: int = 0
     unique_assigned_reads: int = 0
