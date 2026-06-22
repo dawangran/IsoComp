@@ -111,6 +111,7 @@ def write_plots(
         _plot_transcript_body_heatmap(
             plots_dir / "transcript_body_heatmap.png",
             per_transcript_coverage or {},
+            bin_num=len(body_coverage),
         )
         _plot_read_body_heatmap_from_rows(
             plots_dir / "read_body_heatmap.png",
@@ -227,6 +228,7 @@ def _plot_transcript_body_heatmap(
     per_transcript_coverage: dict[str, np.ndarray],
     *,
     max_rows: int = 200,
+    bin_num: int | None = None,
 ) -> None:
     covered = [
         (transcript_id, values)
@@ -235,7 +237,7 @@ def _plot_transcript_body_heatmap(
     ]
     covered.sort(key=lambda item: (-float(np.sum(item[1])), item[0]))
     covered = covered[:max_rows]
-    bin_num = _infer_bin_num(per_transcript_coverage)
+    bin_num = bin_num or _infer_bin_num(per_transcript_coverage)
 
     fig, ax = plt.subplots(figsize=(4.8, max(2.8, min(7.2, 0.07 * len(covered) + 2.2))))
     if covered:

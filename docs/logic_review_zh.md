@@ -143,7 +143,7 @@ is_full_length_like = unique and coverage_fraction >= 0.8
 
 ## 验证结果
 
-- `pytest`: 47 tests passed。
+- `pytest`: 48 tests passed。
 - synthetic CLI end-to-end: passed。
 - 精简 synthetic truth benchmark：`status_accuracy=1.0`、`unique_transcript_accuracy=1.0`、`full_length_f1=1.0`。
 - synthetic benchmark 证明实现与内置真值规则一致，但场景规模较小且由相同方法假设生成，不能替代 SIRV、cap/poly(A)-anchored truth 或人工核验真实 reads。
