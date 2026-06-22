@@ -7,6 +7,7 @@ from isocomp.plots import (
     PlotData,
     _add_read_body_row,
     _distance_display_upper,
+    _plot_transcript_body_heatmap,
 )
 
 
@@ -44,3 +45,12 @@ def test_distance_display_upper_ignores_extreme_tail() -> None:
 
 def test_distance_display_upper_keeps_tolerance_visible() -> None:
     assert _distance_display_upper([0, 10, 20], tolerance=1_500) >= 3_000
+
+
+def test_empty_transcript_body_heatmap_uses_requested_bin_count(tmp_path) -> None:
+    path = tmp_path / "empty_heatmap.png"
+
+    _plot_transcript_body_heatmap(path, {}, bin_num=10)
+
+    assert path.exists()
+    assert path.with_suffix(".pdf").exists()
