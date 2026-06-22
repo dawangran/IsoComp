@@ -338,35 +338,33 @@ def run_pipeline(
     write_dataframe(paths["transcript_metrics"], pd.DataFrame(transcript_rows))
     write_dataframe(paths["sample_summary"], pd.DataFrame([sample_row]))
     write_transcript_body_coverage(paths["transcript_body_coverage"], aggregate_coverage)
-    write_json(
-        paths["assignment_stats"],
-        {
-            "version": __version__,
-            "parameters": {
-                "bam": str(bam),
-                "annotation": str(annotation),
-                "annotation_format": annotation_format,
-                "resolved_annotation_format": resolved_annotation_format,
-                "out": out,
-                "bin_num": bin_num,
-                "min_mapq": min_mapq,
-                "tss_tol": tss_tol,
-                "tes_tol": tes_tol,
-                "min_overlap": min_overlap,
-                "junction_tol": junction_tol,
-                "unique_threshold": unique_threshold,
-                "margin_threshold": margin_threshold,
-                "full_length_coverage": full_length_coverage,
-                "min_terminal_anchor": min_terminal_anchor,
-                "min_unspliced_coverage_for_unique": min_unspliced_coverage_for_unique,
-                "strandness": strandness,
-                "resolved_strandness": resolved_strandness,
-                "strand_inference": strand_inference,
-                "threads": threads,
-            },
-            "counts": sample_row,
+    stats_payload = {
+        "version": __version__,
+        "parameters": {
+            "bam": str(bam),
+            "annotation": str(annotation),
+            "annotation_format": annotation_format,
+            "resolved_annotation_format": resolved_annotation_format,
+            "out": out,
+            "bin_num": bin_num,
+            "min_mapq": min_mapq,
+            "tss_tol": tss_tol,
+            "tes_tol": tes_tol,
+            "min_overlap": min_overlap,
+            "junction_tol": junction_tol,
+            "unique_threshold": unique_threshold,
+            "margin_threshold": margin_threshold,
+            "full_length_coverage": full_length_coverage,
+            "min_terminal_anchor": min_terminal_anchor,
+            "min_unspliced_coverage_for_unique": min_unspliced_coverage_for_unique,
+            "strandness": strandness,
+            "resolved_strandness": resolved_strandness,
+            "strand_inference": strand_inference,
+            "threads": threads,
         },
-    )
+        "counts": sample_row,
+    }
+    write_json(paths["assignment_stats"], stats_payload)
     write_plots(
         paths["plots_dir"],
         [],
@@ -376,6 +374,16 @@ def run_pipeline(
         plot_data=plot_data,
         tss_tol=tss_tol,
         tes_tol=tes_tol,
+    )
+    from .report import write_reports
+
+    write_reports(
+        html_path=paths["html_report"],
+        pdf_path=paths["pdf_report"],
+        sample_row=sample_row,
+        stats_payload=stats_payload,
+        plots_dir=paths["plots_dir"],
+        output_paths=paths,
     )
     LOGGER.info("IsoComp completed: %s", out)
 

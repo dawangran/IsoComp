@@ -39,6 +39,12 @@ def output_paths(out_prefix: str | Path) -> dict[str, Path]:
         "assignment_stats": prefix.with_suffix(prefix.suffix + ".assignment_stats.json")
         if prefix.suffix
         else Path(f"{prefix}.assignment_stats.json"),
+        "html_report": prefix.with_suffix(prefix.suffix + ".report.html")
+        if prefix.suffix
+        else Path(f"{prefix}.report.html"),
+        "pdf_report": prefix.with_suffix(prefix.suffix + ".report.pdf")
+        if prefix.suffix
+        else Path(f"{prefix}.report.pdf"),
         "plots_dir": Path(f"{prefix}.plots"),
     }
 

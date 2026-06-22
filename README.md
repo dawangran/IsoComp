@@ -130,6 +130,8 @@ For `--out sample.isocomp`, IsoComp writes:
 - `sample.isocomp.sample_summary.tsv`
 - `sample.isocomp.transcript_body_coverage.tsv`
 - `sample.isocomp.assignment_stats.json`
+- `sample.isocomp.report.html`
+- `sample.isocomp.report.pdf`
 - `sample.isocomp.plots/`
 
 Transcript-level metrics and transcript body coverage use uniquely assigned reads
@@ -184,6 +186,13 @@ The plots directory contains:
 
 PNG figures are written at 300 dpi. PDF copies are generated alongside them for
 journal workflows that prefer vector text and editable figure panels.
+
+IsoComp also writes two run-level reports next to the TSV/JSON outputs:
+
+- `sample.isocomp.report.html`: a static, self-contained QC report with summary
+  metrics, run parameters, output paths, and embedded PNG figures.
+- `sample.isocomp.report.pdf`: a multi-page PDF report generated with the
+  existing matplotlib dependency, intended for sharing or review packets.
 
 ## Assignment Defaults
 

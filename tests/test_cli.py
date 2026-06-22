@@ -46,10 +46,22 @@ def test_cli_pipeline_smoke(tmp_path: Path, bed12_path: Path, synthetic_bam: Pat
     sample_summary = Path(f"{out_prefix}.sample_summary.tsv")
     body_coverage = Path(f"{out_prefix}.transcript_body_coverage.tsv")
     assignment_stats = Path(f"{out_prefix}.assignment_stats.json")
+    html_report = Path(f"{out_prefix}.report.html")
+    pdf_report = Path(f"{out_prefix}.report.pdf")
     plots_dir = Path(f"{out_prefix}.plots")
 
-    for path in [read_assignment, transcript_metrics, sample_summary, body_coverage, assignment_stats]:
+    for path in [
+        read_assignment,
+        transcript_metrics,
+        sample_summary,
+        body_coverage,
+        assignment_stats,
+        html_report,
+        pdf_report,
+    ]:
         assert path.exists()
+    assert "IsoComp QC Report" in html_report.read_text(encoding="utf-8")
+    assert pdf_report.read_bytes().startswith(b"%PDF")
     for plot_name in [
         "transcript_body_coverage.png",
         "transcript_body_heatmap.png",
