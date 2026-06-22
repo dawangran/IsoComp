@@ -53,6 +53,7 @@ def test_cli_pipeline_smoke(tmp_path: Path, bed12_path: Path, synthetic_bam: Pat
     for plot_name in [
         "transcript_body_coverage.png",
         "transcript_body_heatmap.png",
+        "transcript_body_heatmap_full.png",
         "read_body_heatmap.png",
         "read_coverage_fraction.png",
         "dist_to_5p.png",

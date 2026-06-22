@@ -163,7 +163,10 @@ The plots directory contains:
   using max-normalized coverage on a fixed 0-1 y-axis.
 - `transcript_body_heatmap.png` / `.pdf`: transcript-by-bin heatmap for transcripts
   with at least one unique read; each row is mean-normalized and the display is
-  capped at the 200 most-covered transcripts.
+  sorted by raw coverage, omits transcript-name y-axis labels, and is capped at
+  the 200 most-covered transcripts.
+- `transcript_body_heatmap_full.png` / `.pdf`: full transcript-by-bin heatmap
+  using the same sorting and normalization, but without the 200-transcript cap.
 - `read_body_heatmap.png` / `.pdf`: read-by-bin heatmap for unique reads; each row
   shows the covered fraction of bins in that read's assigned transcript coordinates
   sorted by normalized 5' distance and then normalized 3' distance. Runs with more

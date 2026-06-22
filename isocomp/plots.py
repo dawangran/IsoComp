@@ -113,6 +113,12 @@ def write_plots(
             per_transcript_coverage or {},
             bin_num=len(body_coverage),
         )
+        _plot_transcript_body_heatmap(
+            plots_dir / "transcript_body_heatmap_full.png",
+            per_transcript_coverage or {},
+            max_rows=None,
+            bin_num=len(body_coverage),
+        )
         _plot_read_body_heatmap_from_rows(
             plots_dir / "read_body_heatmap.png",
             plot_data.read_body_rows,
@@ -227,16 +233,13 @@ def _plot_transcript_body_heatmap(
     path: Path,
     per_transcript_coverage: dict[str, np.ndarray],
     *,
-    max_rows: int = 200,
+    max_rows: int | None = 200,
     bin_num: int | None = None,
 ) -> None:
-    covered = [
-        (transcript_id, values)
-        for transcript_id, values in per_transcript_coverage.items()
-        if values.size and float(np.sum(values)) > 0
-    ]
-    covered.sort(key=lambda item: (-float(np.sum(item[1])), item[0]))
-    covered = covered[:max_rows]
+    covered = _sorted_transcript_body_heatmap_rows(
+        per_transcript_coverage,
+        max_rows=max_rows,
+    )
     bin_num = bin_num or _infer_bin_num(per_transcript_coverage)
 
     fig, ax = plt.subplots(figsize=(4.8, max(2.8, min(7.2, 0.07 * len(covered) + 2.2))))
@@ -254,8 +257,7 @@ def _plot_transcript_body_heatmap(
         colorbar = fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02)
         colorbar.set_label("Mean-normalized coverage")
         _style_colorbar(colorbar)
-        ax.set_yticks(_heatmap_yticks(len(covered)))
-        ax.set_yticklabels([covered[index][0] for index in _heatmap_yticks(len(covered))], fontsize=7)
+        ax.set_yticks([])
     else:
         image = ax.imshow(
             np.zeros((1, max(1, bin_num))),
@@ -270,11 +272,27 @@ def _plot_transcript_body_heatmap(
         _empty_panel(ax, "No uniquely assigned transcripts")
 
     ax.set_xlabel("Transcript position (5' to 3', %)")
-    ax.set_ylabel("Transcript")
+    ax.set_ylabel("Transcripts sorted by coverage")
     ax.set_xticks(_bin_axis_ticks(bin_num))
     ax.set_xticklabels(_terminal_axis_tick_labels(bin_num))
     _style_axis(ax)
     _save_figure(fig, path)
+
+
+def _sorted_transcript_body_heatmap_rows(
+    per_transcript_coverage: dict[str, np.ndarray],
+    *,
+    max_rows: int | None,
+) -> list[tuple[str, np.ndarray]]:
+    covered = [
+        (transcript_id, values)
+        for transcript_id, values in per_transcript_coverage.items()
+        if values.size and float(np.sum(values)) > 0
+    ]
+    covered.sort(key=lambda item: (-float(np.sum(item[1])), item[0]))
+    if max_rows is None:
+        return covered
+    return covered[:max_rows]
 
 
 def _assignment_to_read_body_row(

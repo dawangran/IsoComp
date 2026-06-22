@@ -8,6 +8,8 @@ from isocomp.plots import (
     _add_read_body_row,
     _distance_display_upper,
     _plot_transcript_body_heatmap,
+    _sorted_transcript_body_heatmap_rows,
+    write_plots,
 )
 
 
@@ -54,3 +56,52 @@ def test_empty_transcript_body_heatmap_uses_requested_bin_count(tmp_path) -> Non
 
     assert path.exists()
     assert path.with_suffix(".pdf").exists()
+
+
+def test_write_plots_creates_full_transcript_body_heatmap(tmp_path) -> None:
+    write_plots(
+        tmp_path,
+        read_metrics=[],
+        body_coverage=np.ones(2),
+        per_transcript_coverage={"tx": np.ones(2)},
+    )
+
+    assert (tmp_path / "transcript_body_heatmap_full.png").exists()
+    assert (tmp_path / "transcript_body_heatmap_full.pdf").exists()
+
+
+def test_transcript_body_heatmap_rows_are_sorted_by_coverage() -> None:
+    rows = _sorted_transcript_body_heatmap_rows(
+        {
+            "tx_low": np.array([0.5, 0.5]),
+            "tx_high": np.array([2.0, 3.0]),
+            "tx_mid_b": np.array([1.0, 1.0]),
+            "tx_mid_a": np.array([1.0, 1.0]),
+            "tx_empty": np.array([0.0, 0.0]),
+        },
+        max_rows=3,
+    )
+
+    assert [transcript_id for transcript_id, _ in rows] == [
+        "tx_high",
+        "tx_mid_a",
+        "tx_mid_b",
+    ]
+
+
+def test_transcript_body_heatmap_rows_can_include_all_transcripts() -> None:
+    rows = _sorted_transcript_body_heatmap_rows(
+        {
+            "tx_low": np.array([0.5, 0.5]),
+            "tx_high": np.array([2.0, 3.0]),
+            "tx_mid": np.array([1.0, 1.0]),
+            "tx_empty": np.array([0.0, 0.0]),
+        },
+        max_rows=None,
+    )
+
+    assert [transcript_id for transcript_id, _ in rows] == [
+        "tx_high",
+        "tx_mid",
+        "tx_low",
+    ]
