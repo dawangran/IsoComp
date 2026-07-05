@@ -3,7 +3,8 @@
 
 The generated transcriptome contains shared exons, alternative junctions,
 terminally similar isoforms, negative-strand transcripts, ambiguous single-exon
-transcripts, low-confidence reads, and unassigned reads.
+transcripts, 5-exon and 10-exon transcript models, exon skipping, retained
+introns, alternative TSS/TES models, low-confidence reads, and unassigned reads.
 
 Outputs are intended for manual tool testing:
 
@@ -20,7 +21,28 @@ from pathlib import Path
 from typing import Any
 
 CMATCH = 0
+CINS = 1
+CDEL = 2
 CREF_SKIP = 3
+CSOFT_CLIP = 4
+CHARD_CLIP = 5
+CEQUAL = 7
+CDIFF = 8
+
+QUERY_CONSUMING_OPS = {CMATCH, CINS, CSOFT_CLIP, CEQUAL, CDIFF}
+REFERENCE_FOOTPRINT_OPS = {CMATCH, CEQUAL, CDIFF}
+REFERENCE_GAP_OPS = {CREF_SKIP}
+REFERENCE_DELETION_OPS = {CDEL}
+CIGAR_OP_NAMES = {
+    CMATCH: "M",
+    CINS: "I",
+    CDEL: "D",
+    CREF_SKIP: "N",
+    CSOFT_CLIP: "S",
+    CHARD_CLIP: "H",
+    CEQUAL: "=",
+    CDIFF: "X",
+}
 
 
 @dataclass(frozen=True)
@@ -66,6 +88,8 @@ class SyntheticRead:
     truth_coverage_fraction: float | None
     truth_dist_to_5p: int | None
     truth_dist_to_3p: int | None
+    simulation_tier: str = "clean"
+    artifact: str = "ideal"
 
 
 def main() -> None:
@@ -73,11 +97,18 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     transcripts = build_transcripts()
-    reads = build_reads(transcripts, replicates=args.replicates, mapq=args.mapq)
+    reads = build_reads(
+        transcripts,
+        replicates=args.replicates,
+        mapq=args.mapq,
+        simulation_mode=args.simulation_mode,
+    )
+    incomplete_transcripts = build_incomplete_transcripts(transcripts)
     redundant_transcripts = build_redundant_transcripts(transcripts)
 
     complete_bed = args.out_dir / "synthetic.complete.bed12"
     expressed_bed = args.out_dir / "synthetic.expressed_only.bed12"
+    incomplete_bed = args.out_dir / "synthetic.incomplete.bed12"
     redundant_bed = args.out_dir / "synthetic.redundant.bed12"
     manifest_tsv = args.out_dir / "synthetic.annotation_manifest.tsv"
     truth_tsv = args.out_dir / "synthetic.truth.tsv"
@@ -91,12 +122,19 @@ def main() -> None:
         expressed_bed,
         {name: tx for name, tx in transcripts.items() if tx.expressed},
     )
+    write_bed12(incomplete_bed, incomplete_transcripts)
     write_bed12(redundant_bed, redundant_transcripts)
-    write_annotation_manifest(manifest_tsv, transcripts, redundant_transcripts)
+    write_annotation_manifest(
+        manifest_tsv,
+        transcripts,
+        incomplete_transcripts,
+        redundant_transcripts,
+    )
     write_truth_tsv(truth_tsv, reads)
     profile_rows, profile_metric_rows = compute_annotation_dependence_profiles(
         reads=reads,
         complete_transcripts=transcripts,
+        incomplete_transcripts=incomplete_transcripts,
         redundant_transcripts=redundant_transcripts,
         bin_num=args.bin_num,
     )
@@ -113,12 +151,14 @@ def main() -> None:
         sorted_bam=sorted_bam,
         complete_bed=complete_bed,
         expressed_bed=expressed_bed,
+        incomplete_bed=incomplete_bed,
         redundant_bed=redundant_bed,
     )
 
     print(f"Wrote synthetic data to {args.out_dir}")
     print(f"Complete annotation: {complete_bed}")
     print(f"Expressed-only annotation: {expressed_bed}")
+    print(f"Incomplete annotation: {incomplete_bed}")
     print(f"Redundant annotation: {redundant_bed}")
     print(f"Sorted BAM: {sorted_bam}")
     print(f"Truth labels: {truth_tsv}")
@@ -151,7 +191,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reference-length",
         type=int,
-        default=12000,
+        default=26000,
         help="Length of synthetic chromosome chrSyn.",
     )
     parser.add_argument(
@@ -159,6 +199,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=100,
         help="Number of transcript-body bins for expected synthetic profiles.",
+    )
+    parser.add_argument(
+        "--simulation-mode",
+        choices=["clean", "realistic", "stress", "all"],
+        default="clean",
+        help=(
+            "Synthetic read set to emit. clean preserves the original controlled "
+            "truth cases; realistic adds platform-like CIGAR artifacts; stress "
+            "adds adversarial annotation and alignment cases; all emits every tier."
+        ),
     )
     return parser.parse_args()
 
@@ -229,6 +279,87 @@ def build_transcripts() -> dict[str, Transcript]:
             expressed=True,
         ),
         Transcript(
+            "TX_FIVE_EXON_MAIN",
+            "chrSyn",
+            "+",
+            (
+                (12000, 12100),
+                (12200, 12300),
+                (12450, 12550),
+                (12700, 12800),
+                (13000, 13100),
+            ),
+            expressed=True,
+        ),
+        Transcript(
+            "TX_FIVE_EXON_SKIP",
+            "chrSyn",
+            "+",
+            (
+                (12000, 12100),
+                (12200, 12300),
+                (12700, 12800),
+                (13000, 13100),
+            ),
+            expressed=True,
+        ),
+        Transcript(
+            "TX_FIVE_RETAINED_INTRON",
+            "chrSyn",
+            "+",
+            (
+                (12000, 12100),
+                (12200, 12550),
+                (12700, 12800),
+                (13000, 13100),
+            ),
+            expressed=True,
+        ),
+        Transcript(
+            "TX_FIVE_ALT_TSS",
+            "chrSyn",
+            "+",
+            (
+                (12040, 12100),
+                (12200, 12300),
+                (12450, 12550),
+                (12700, 12800),
+                (13000, 13100),
+            ),
+            expressed=True,
+        ),
+        Transcript(
+            "TX_FIVE_ALT_TES",
+            "chrSyn",
+            "+",
+            (
+                (12000, 12100),
+                (12200, 12300),
+                (12450, 12550),
+                (12700, 12800),
+                (13000, 13060),
+            ),
+            expressed=True,
+        ),
+        Transcript(
+            "TX_TEN_EXON_MAIN",
+            "chrSyn",
+            "+",
+            (
+                (15000, 15080),
+                (15200, 15280),
+                (15400, 15480),
+                (15600, 15680),
+                (15800, 15880),
+                (16000, 16080),
+                (16200, 16280),
+                (16400, 16480),
+                (16600, 16680),
+                (16800, 16880),
+            ),
+            expressed=True,
+        ),
+        Transcript(
             "TX_FOUR_EXON",
             "chrSyn",
             "+",
@@ -281,10 +412,70 @@ def build_redundant_transcripts(
             ((7500, 7800), (8100, 8500)),
             expressed=False,
         ),
+        Transcript(
+            "TX_FIVE_EXON_REDUNDANT_DUP",
+            "chrSyn",
+            "+",
+            (
+                (12000, 12100),
+                (12200, 12300),
+                (12450, 12550),
+                (12700, 12800),
+                (13000, 13100),
+            ),
+            expressed=False,
+        ),
+        Transcript(
+            "TX_TEN_EXON_INTERNAL_DECOY",
+            "chrSyn",
+            "+",
+            (
+                (15400, 15480),
+                (15600, 15680),
+                (15800, 15880),
+                (16000, 16080),
+                (16200, 16280),
+                (16400, 16480),
+                (16600, 16680),
+            ),
+            expressed=False,
+        ),
     ]
     for transcript in extras:
         items[transcript.transcript_id] = transcript
     return items
+
+
+def build_incomplete_transcripts(
+    transcripts: dict[str, Transcript],
+) -> dict[str, Transcript]:
+    """Drop expressed isoforms to model annotation incompleteness."""
+
+    omitted = {
+        "TX_POS_ALT_JUNC",
+        "TX_TERM_SHORT",
+        "TX_FIVE_RETAINED_INTRON",
+        "TX_FIVE_ALT_TSS",
+    }
+    return {
+        transcript_id: transcript
+        for transcript_id, transcript in transcripts.items()
+        if transcript_id not in omitted
+    }
+
+
+def active_simulation_tiers(simulation_mode: str) -> set[str]:
+    if simulation_mode == "clean":
+        return {"clean"}
+    if simulation_mode == "realistic":
+        return {"clean", "realistic"}
+    if simulation_mode == "stress":
+        return {"clean", "stress"}
+    if simulation_mode == "all":
+        return {"clean", "realistic", "stress"}
+    raise ValueError(
+        "--simulation-mode must be one of clean, realistic, stress, or all"
+    )
 
 
 def build_reads(
@@ -292,10 +483,30 @@ def build_reads(
     *,
     replicates: int,
     mapq: int,
+    simulation_mode: str = "clean",
 ) -> list[SyntheticRead]:
     if replicates < 1:
         raise ValueError("--replicates must be >= 1")
 
+    tiers = active_simulation_tiers(simulation_mode)
+    reads: list[SyntheticRead] = []
+
+    if "clean" in tiers:
+        reads.extend(build_clean_reads(transcripts, replicates=replicates, mapq=mapq))
+    if "realistic" in tiers:
+        reads.extend(build_realistic_reads(transcripts, replicates=replicates, mapq=mapq))
+    if "stress" in tiers:
+        reads.extend(build_stress_reads(transcripts, replicates=replicates, mapq=mapq))
+
+    return reads
+
+
+def build_clean_reads(
+    transcripts: dict[str, Transcript],
+    *,
+    replicates: int,
+    mapq: int,
+) -> list[SyntheticRead]:
     reads: list[SyntheticRead] = []
     read_cases = [
         ("pos_full", "TX_POS_MAIN", (0, 300), "unique", True),
@@ -325,6 +536,64 @@ def build_reads(
                 )
             )
 
+    complex_read_cases = [
+        (
+            "five_exon_full",
+            "TX_FIVE_EXON_MAIN",
+            None,
+            "ambiguous",
+            False,
+            "complex_exon_chain",
+        ),
+        (
+            "five_exon_internal_partial",
+            "TX_FIVE_EXON_MAIN",
+            (80, 420),
+            "ambiguous",
+            False,
+            "complex_exon_chain",
+        ),
+        ("ten_exon_full", "TX_TEN_EXON_MAIN", None, "unique", True, "complex_exon_chain"),
+        (
+            "ten_exon_5p_trunc",
+            "TX_TEN_EXON_MAIN",
+            (160, 800),
+            "unique",
+            False,
+            "complex_exon_chain",
+        ),
+        ("exon_skip_full", "TX_FIVE_EXON_SKIP", None, "unique", True, "exon_skipping"),
+        (
+            "retained_intron_full",
+            "TX_FIVE_RETAINED_INTRON",
+            None,
+            "unique",
+            True,
+            "retained_intron",
+        ),
+        ("alt_tss_full", "TX_FIVE_ALT_TSS", None, "ambiguous", False, "alternative_tss"),
+        ("alt_tes_full", "TX_FIVE_ALT_TES", None, "ambiguous", False, "alternative_tes"),
+    ]
+    for scenario, tx_id, tx_interval, status, is_full_length_like, artifact in (
+        complex_read_cases
+    ):
+        transcript = transcripts[tx_id]
+        if tx_interval is None:
+            tx_interval = (0, transcript.transcript_length)
+        for index in range(replicates):
+            reads.append(
+                read_from_transcript_interval(
+                    read_id=f"{scenario}_{index:03d}",
+                    transcript=transcript,
+                    tx_interval=tx_interval,
+                    truth_status=status,
+                    truth_is_full_length_like=is_full_length_like,
+                    scenario=scenario,
+                    mapq=mapq,
+                    artifact=artifact,
+                )
+            )
+
     for index in range(replicates):
         reads.append(
             intronic_low_confidence_read(
@@ -345,6 +614,101 @@ def build_reads(
     return reads
 
 
+def build_realistic_reads(
+    transcripts: dict[str, Transcript],
+    *,
+    replicates: int,
+    mapq: int,
+) -> list[SyntheticRead]:
+    reads: list[SyntheticRead] = []
+    for index in range(replicates):
+        reads.append(
+            read_from_transcript_interval(
+                read_id=f"softclip_5p_full_{index:03d}",
+                transcript=transcripts["TX_POS_MAIN"],
+                tx_interval=(0, 300),
+                truth_status="unique",
+                truth_is_full_length_like=True,
+                scenario="softclip_5p_full",
+                mapq=mapq,
+                simulation_tier="realistic",
+                artifact="terminal_softclip",
+                left_softclip=25,
+            )
+        )
+        reads.append(
+            read_from_transcript_interval(
+                read_id=f"softclip_3p_neg_full_{index:03d}",
+                transcript=transcripts["TX_NEG_MAIN"],
+                tx_interval=(0, 300),
+                truth_status="unique",
+                truth_is_full_length_like=True,
+                scenario="softclip_3p_neg_full",
+                mapq=mapq,
+                simulation_tier="realistic",
+                artifact="terminal_softclip",
+                left_softclip=18,
+            )
+        )
+        reads.append(
+            read_from_transcript_interval(
+                read_id=f"insertion_noise_full_{index:03d}",
+                transcript=transcripts["TX_LONG_MAIN"],
+                tx_interval=(0, 1000),
+                truth_status="unique",
+                truth_is_full_length_like=True,
+                scenario="insertion_noise_full",
+                mapq=mapq,
+                simulation_tier="realistic",
+                artifact="internal_insertion",
+                insertion_after_first_match=6,
+            )
+        )
+        reads.append(
+            junction_shift_low_confidence_read(
+                read_id=f"junction_shift_low_conf_{index:03d}",
+                mapq=mapq,
+            )
+        )
+    return reads
+
+
+def build_stress_reads(
+    transcripts: dict[str, Transcript],
+    *,
+    replicates: int,
+    mapq: int,
+) -> list[SyntheticRead]:
+    reads: list[SyntheticRead] = []
+    for index in range(replicates):
+        reads.append(
+            chimeric_low_confidence_read(
+                read_id=f"chimeric_low_conf_{index:03d}",
+                mapq=mapq,
+            )
+        )
+        reads.append(
+            novel_exon_chain_low_confidence_read(
+                read_id=f"novel_exon_chain_low_conf_{index:03d}",
+                mapq=mapq,
+            )
+        )
+        reads.append(
+            read_from_transcript_interval(
+                read_id=f"short_shared_exon_ambiguous_{index:03d}",
+                transcript=transcripts["TX_AMB_A"],
+                tx_interval=(20, 180),
+                truth_status="ambiguous",
+                truth_is_full_length_like=False,
+                scenario="short_shared_exon_ambiguous",
+                mapq=mapq,
+                simulation_tier="stress",
+                artifact="single_exon_isoform_ambiguity",
+            )
+        )
+    return reads
+
+
 def read_from_transcript_interval(
     *,
     read_id: str,
@@ -354,9 +718,20 @@ def read_from_transcript_interval(
     truth_is_full_length_like: bool,
     scenario: str,
     mapq: int,
+    simulation_tier: str = "clean",
+    artifact: str = "ideal",
+    left_softclip: int = 0,
+    right_softclip: int = 0,
+    insertion_after_first_match: int = 0,
 ) -> SyntheticRead:
     blocks = tx_interval_to_genomic_blocks(transcript, tx_interval)
     start, cigar = cigar_from_blocks(blocks)
+    cigar = add_cigar_artifacts(
+        tuple(cigar),
+        left_softclip=left_softclip,
+        right_softclip=right_softclip,
+        insertion_after_first_match=insertion_after_first_match,
+    )
     tx_start, tx_end = tx_interval
     coverage_fraction = (tx_end - tx_start) / transcript.transcript_length
     return SyntheticRead(
@@ -375,7 +750,46 @@ def read_from_transcript_interval(
         truth_coverage_fraction=coverage_fraction,
         truth_dist_to_5p=tx_start,
         truth_dist_to_3p=transcript.transcript_length - tx_end,
+        simulation_tier=simulation_tier,
+        artifact=artifact,
     )
+
+
+def add_cigar_artifacts(
+    cigar: tuple[tuple[int, int], ...],
+    *,
+    left_softclip: int = 0,
+    right_softclip: int = 0,
+    insertion_after_first_match: int = 0,
+) -> tuple[tuple[int, int], ...]:
+    for label, value in [
+        ("left_softclip", left_softclip),
+        ("right_softclip", right_softclip),
+        ("insertion_after_first_match", insertion_after_first_match),
+    ]:
+        if value < 0:
+            raise ValueError(f"{label} must be >= 0")
+
+    updated: list[tuple[int, int]] = []
+    if left_softclip:
+        updated.append((CSOFT_CLIP, left_softclip))
+
+    inserted = False
+    for op, length in cigar:
+        updated.append((op, length))
+        if (
+            not inserted
+            and insertion_after_first_match
+            and op in REFERENCE_FOOTPRINT_OPS
+        ):
+            updated.append((CINS, insertion_after_first_match))
+            inserted = True
+
+    if insertion_after_first_match and not inserted:
+        raise ValueError("Cannot add insertion to a CIGAR without aligned match blocks")
+    if right_softclip:
+        updated.append((CSOFT_CLIP, right_softclip))
+    return tuple(updated)
 
 
 def intronic_low_confidence_read(
@@ -428,6 +842,86 @@ def junction_conflict_low_confidence_read(
         truth_coverage_fraction=None,
         truth_dist_to_5p=None,
         truth_dist_to_3p=None,
+    )
+
+
+def junction_shift_low_confidence_read(
+    *,
+    read_id: str,
+    mapq: int,
+) -> SyntheticRead:
+    blocks = [(1000, 1108), (1308, 1408), (1608, 1708)]
+    start, cigar = cigar_from_blocks(blocks)
+    return SyntheticRead(
+        read_id=read_id,
+        chrom="chrSyn",
+        start=start,
+        cigar=tuple(cigar),
+        is_reverse=False,
+        mapq=mapq,
+        scenario=read_id.rsplit("_", 1)[0],
+        truth_transcript_id="TX_POS_MAIN",
+        truth_status="low_confidence",
+        truth_is_full_length_like=False,
+        truth_tx_start=None,
+        truth_tx_end=None,
+        truth_coverage_fraction=None,
+        truth_dist_to_5p=None,
+        truth_dist_to_3p=None,
+        simulation_tier="realistic",
+        artifact="junction_shift",
+    )
+
+
+def chimeric_low_confidence_read(*, read_id: str, mapq: int) -> SyntheticRead:
+    blocks = [(1000, 1100), (8100, 8200)]
+    start, cigar = cigar_from_blocks(blocks)
+    return SyntheticRead(
+        read_id=read_id,
+        chrom="chrSyn",
+        start=start,
+        cigar=tuple(cigar),
+        is_reverse=False,
+        mapq=mapq,
+        scenario="chimeric_low_conf",
+        truth_transcript_id="",
+        truth_status="low_confidence",
+        truth_is_full_length_like=False,
+        truth_tx_start=None,
+        truth_tx_end=None,
+        truth_coverage_fraction=None,
+        truth_dist_to_5p=None,
+        truth_dist_to_3p=None,
+        simulation_tier="stress",
+        artifact="chimeric_alignment",
+    )
+
+
+def novel_exon_chain_low_confidence_read(
+    *,
+    read_id: str,
+    mapq: int,
+) -> SyntheticRead:
+    blocks = [(1000, 1100), (1450, 1550), (1600, 1700)]
+    start, cigar = cigar_from_blocks(blocks)
+    return SyntheticRead(
+        read_id=read_id,
+        chrom="chrSyn",
+        start=start,
+        cigar=tuple(cigar),
+        is_reverse=False,
+        mapq=mapq,
+        scenario=read_id.rsplit("_", 1)[0],
+        truth_transcript_id="",
+        truth_status="low_confidence",
+        truth_is_full_length_like=False,
+        truth_tx_start=None,
+        truth_tx_end=None,
+        truth_coverage_fraction=None,
+        truth_dist_to_5p=None,
+        truth_dist_to_3p=None,
+        simulation_tier="stress",
+        artifact="novel_exon_chain",
     )
 
 
@@ -496,12 +990,11 @@ def cigar_from_blocks(blocks: list[tuple[int, int]]) -> tuple[int, list[tuple[in
 
 
 def query_length(cigar: tuple[tuple[int, int], ...]) -> int:
-    return sum(length for op, length in cigar if op == CMATCH)
+    return sum(length for op, length in cigar if op in QUERY_CONSUMING_OPS)
 
 
 def cigar_to_string(cigar: tuple[tuple[int, int], ...]) -> str:
-    op_names = {CMATCH: "M", CREF_SKIP: "N"}
-    return "".join(f"{length}{op_names[op]}" for op, length in cigar)
+    return "".join(f"{length}{CIGAR_OP_NAMES[op]}" for op, length in cigar)
 
 
 def write_bed12(path: Path, transcripts: dict[str, Transcript]) -> None:
@@ -535,6 +1028,8 @@ def write_truth_tsv(path: Path, reads: list[SyntheticRead]) -> None:
     columns = [
         "read_id",
         "scenario",
+        "simulation_tier",
+        "artifact",
         "truth_transcript_id",
         "truth_status",
         "truth_is_full_length_like",
@@ -551,6 +1046,8 @@ def write_truth_tsv(path: Path, reads: list[SyntheticRead]) -> None:
         values = [
             read.read_id,
             read.scenario,
+            read.simulation_tier,
+            read.artifact,
             read.truth_transcript_id,
             read.truth_status,
             int(read.truth_is_full_length_like),
@@ -573,6 +1070,7 @@ def nullable(value: object | None) -> str:
 def write_annotation_manifest(
     path: Path,
     complete_transcripts: dict[str, Transcript],
+    incomplete_transcripts: dict[str, Transcript],
     redundant_transcripts: dict[str, Transcript],
 ) -> None:
     columns = [
@@ -583,6 +1081,7 @@ def write_annotation_manifest(
         "category",
         "expressed_in_truth",
         "in_expressed_only_annotation",
+        "in_incomplete_annotation",
         "in_complete_annotation",
         "in_redundant_annotation",
     ]
@@ -605,6 +1104,9 @@ def write_annotation_manifest(
                 "category": category,
                 "expressed_in_truth": int(transcript.expressed),
                 "in_expressed_only_annotation": int(transcript.expressed and in_complete),
+                "in_incomplete_annotation": int(
+                    transcript_id in incomplete_transcripts
+                ),
                 "in_complete_annotation": int(in_complete),
                 "in_redundant_annotation": 1,
             }
@@ -616,6 +1118,7 @@ def compute_annotation_dependence_profiles(
     *,
     reads: list[SyntheticRead],
     complete_transcripts: dict[str, Transcript],
+    incomplete_transcripts: dict[str, Transcript],
     redundant_transcripts: dict[str, Transcript],
     bin_num: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -630,6 +1133,7 @@ def compute_annotation_dependence_profiles(
     profile_sets = {
         "truth_read_centric": None,
         "rseqc_style_expressed_only_annotation": expressed_transcripts,
+        "rseqc_style_incomplete_annotation": incomplete_transcripts,
         "rseqc_style_complete_annotation": complete_transcripts,
         "rseqc_style_redundant_annotation": redundant_transcripts,
     }
@@ -648,6 +1152,7 @@ def compute_annotation_dependence_profiles(
 
         for profile_name in [
             "rseqc_style_expressed_only_annotation",
+            "rseqc_style_incomplete_annotation",
             "rseqc_style_complete_annotation",
             "rseqc_style_redundant_annotation",
         ]:
@@ -681,6 +1186,7 @@ def compute_annotation_dependence_profiles(
     transcript_model_counts = {
         "truth_read_centric": math.nan,
         "rseqc_style_expressed_only_annotation": len(expressed_transcripts),
+        "rseqc_style_incomplete_annotation": len(incomplete_transcripts),
         "rseqc_style_complete_annotation": len(complete_transcripts),
         "rseqc_style_redundant_annotation": len(redundant_transcripts),
     }
@@ -776,15 +1282,22 @@ def blocks_from_cigar(
     current_start: int | None = None
     blocks: list[tuple[int, int]] = []
     for op, length in cigar:
-        if op == CMATCH:
+        if op in REFERENCE_FOOTPRINT_OPS:
             if current_start is None:
                 current_start = ref_pos
             ref_pos += length
-        elif op == CREF_SKIP:
+        elif op in REFERENCE_GAP_OPS:
             if current_start is not None and ref_pos > current_start:
                 blocks.append((current_start, ref_pos))
             ref_pos += length
             current_start = None
+        elif op in REFERENCE_DELETION_OPS:
+            if current_start is not None and ref_pos > current_start:
+                blocks.append((current_start, ref_pos))
+            ref_pos += length
+            current_start = None
+        elif op in {CINS, CSOFT_CLIP, CHARD_CLIP}:
+            continue
         else:
             raise ValueError(f"Unsupported synthetic CIGAR op: {op}")
     if current_start is not None and ref_pos > current_start:
@@ -941,6 +1454,7 @@ def write_run_commands(
     sorted_bam: Path,
     complete_bed: Path,
     expressed_bed: Path,
+    incomplete_bed: Path,
     redundant_bed: Path,
 ) -> None:
     repo_root = Path.cwd().resolve()
@@ -948,6 +1462,7 @@ def write_run_commands(
     sorted_bam = sorted_bam.resolve()
     complete_bed = complete_bed.resolve()
     expressed_bed = expressed_bed.resolve()
+    incomplete_bed = incomplete_bed.resolve()
     redundant_bed = redundant_bed.resolve()
     output_dir = output_dir.resolve()
     text = f"""#!/usr/bin/env bash
@@ -975,6 +1490,17 @@ $ISOCOMP_CMD \\
   --tes-tol 100 \\
   --force
 
+# IsoComp on an incomplete annotation with selected expressed isoforms omitted.
+$ISOCOMP_CMD \\
+  --bam {sorted_bam} \\
+  --annotation {incomplete_bed} \\
+  --out {output_dir / 'isocomp.incomplete'} \\
+  --bin-num 100 \\
+  --min-mapq 20 \\
+  --tss-tol 100 \\
+  --tes-tol 100 \\
+  --force
+
 # RSeQC gene-body coverage on the complete annotation.
 $RSEQC_CMD \\
   -i {sorted_bam} \\
@@ -989,6 +1515,13 @@ $RSEQC_CMD \\
   -o {output_dir / 'rseqc.expressed_only_annotation'} \\
   -f png
 
+# RSeQC on an incomplete annotation, useful for annotation-missing stress checks.
+$RSEQC_CMD \\
+  -i {sorted_bam} \\
+  -r {incomplete_bed} \\
+  -o {output_dir / 'rseqc.incomplete_annotation'} \\
+  -f png
+
 # RSeQC on a redundant annotation with extra overlapping unexpressed models.
 $RSEQC_CMD \\
   -i {sorted_bam} \\
@@ -996,7 +1529,7 @@ $RSEQC_CMD \\
   -o {output_dir / 'rseqc.redundant_annotation'} \\
   -f png
 
-# Manuscript-ready parser/plotter for the three RSeQC outputs above.
+# Manuscript-ready parser/plotter for the four RSeQC outputs above.
 $PYTHON_CMD {repo_root / 'benchmarks' / 'rseqc_annotation_dependence.py'} \\
   --input-dir {output_dir} \\
   --out-dir {output_dir / 'rseqc_annotation_dependence'} \\
