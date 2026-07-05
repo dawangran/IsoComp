@@ -2,8 +2,9 @@
 """Run and summarize real RSeQC geneBodyCoverage on synthetic annotations.
 
 This script is manuscript-oriented. It compares the same synthetic BAM under
-three annotation inputs: truth-expressed, complete, and redundant. The output is
-intended for the RSeQC annotation-dependence panel and its source table.
+four annotation inputs: truth-expressed, incomplete, complete, and redundant.
+The output is intended for the RSeQC annotation-dependence panel and its source
+table.
 """
 
 from __future__ import annotations
@@ -22,11 +23,13 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RSEQC_LABELS = {
     "expressed_only_annotation": "rseqc.expressed_only_annotation",
+    "incomplete_annotation": "rseqc.incomplete_annotation",
     "complete_annotation": "rseqc.complete_annotation",
     "redundant_annotation": "rseqc.redundant_annotation",
 }
 LEGACY_RSEQC_LABELS = {
     "expressed_only_annotation": "rseqc.expressed_only",
+    "incomplete_annotation": "rseqc.incomplete",
     "complete_annotation": "rseqc.complete",
     "redundant_annotation": "rseqc.redundant",
 }
@@ -40,12 +43,18 @@ def main() -> None:
     input_dir = args.input_dir
     if input_dir is None:
         input_dir = args.out_dir / "input"
-        generate_synthetic_input(input_dir, args.replicates, args.python)
+        generate_synthetic_input(
+            input_dir,
+            args.replicates,
+            args.python,
+            args.simulation_mode,
+        )
     input_dir = input_dir.resolve()
 
     bam_path = input_dir / "synthetic.sorted.bam"
     annotations = {
         "expressed_only_annotation": input_dir / "synthetic.expressed_only.bed12",
+        "incomplete_annotation": input_dir / "synthetic.incomplete.bed12",
         "complete_annotation": input_dir / "synthetic.complete.bed12",
         "redundant_annotation": input_dir / "synthetic.redundant.bed12",
     }
@@ -114,7 +123,10 @@ def main() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run real RSeQC on synthetic expressed, complete, and redundant annotations."
+        description=(
+            "Run real RSeQC on synthetic expressed-only, incomplete, complete, "
+            "and redundant annotations."
+        )
     )
     parser.add_argument(
         "--input-dir",
@@ -132,6 +144,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=20,
         help="Replicates per synthetic read scenario when --input-dir is omitted.",
+    )
+    parser.add_argument(
+        "--simulation-mode",
+        choices=["clean", "realistic", "stress", "all"],
+        default="all",
+        help="Synthetic read tier used when --input-dir is omitted.",
     )
     parser.add_argument(
         "--python",
@@ -185,7 +203,12 @@ def configure_plot_cache(out_dir: Path) -> None:
     os.environ.setdefault("XDG_CACHE_HOME", str(xdg_cache))
 
 
-def generate_synthetic_input(input_dir: Path, replicates: int, python: str) -> None:
+def generate_synthetic_input(
+    input_dir: Path,
+    replicates: int,
+    python: str,
+    simulation_mode: str,
+) -> None:
     command = [
         python,
         str(REPO_ROOT / "benchmarks" / "generate_synthetic_data.py"),
@@ -193,6 +216,8 @@ def generate_synthetic_input(input_dir: Path, replicates: int, python: str) -> N
         str(input_dir),
         "--replicates",
         str(replicates),
+        "--simulation-mode",
+        simulation_mode,
     ]
     subprocess.run(command, cwd=REPO_ROOT, check=True)
 
@@ -263,6 +288,7 @@ def build_profile_rows(
         expected_map = {
             "truth_read_centric": "Truth read-centric",
             "rseqc_style_expressed_only_annotation": "Expected RSeQC-style expressed-only",
+            "rseqc_style_incomplete_annotation": "Expected RSeQC-style incomplete",
             "rseqc_style_complete_annotation": "Expected RSeQC-style complete",
             "rseqc_style_redundant_annotation": "Expected RSeQC-style redundant",
         }

@@ -8,7 +8,9 @@ To generate only the synthetic BED12/BAM/truth files and test IsoComp or RSeQC
 yourself:
 
 ```bash
-python benchmarks/generate_synthetic_data.py --out-dir benchmark_runs/manual_synthetic
+python benchmarks/generate_synthetic_data.py \
+  --out-dir benchmark_runs/manual_synthetic \
+  --simulation-mode all
 ```
 
 This writes:
@@ -16,19 +18,36 @@ This writes:
 - `synthetic.complete.bed12`: complete annotation with expressed and decoy
   transcripts.
 - `synthetic.expressed_only.bed12`: expressed-only matched annotation control.
+- `synthetic.incomplete.bed12`: complete annotation with selected expressed
+  isoforms omitted to model annotation incompleteness.
 - `synthetic.redundant.bed12`: complete annotation plus extra overlapping
   unexpressed transcript models for the RSeQC annotation-dependence test.
-- `synthetic.annotation_manifest.tsv`: transcript membership across the three
-  annotation sets.
+- `synthetic.annotation_manifest.tsv`: transcript membership across the
+  expressed-only, incomplete, complete, and redundant annotation sets.
 - `synthetic.sorted.bam` and `synthetic.sorted.bam.bai`: sorted/indexed synthetic
   alignments.
-- `synthetic.truth.tsv`: expected read-level status and completeness labels.
+- `synthetic.truth.tsv`: expected read-level status and completeness labels,
+  including `simulation_tier` and `artifact` columns.
 - `synthetic.expected_profiles.tsv`: truth read-centric and RSeQC-style expected
   transcript-body coverage profiles with raw, mean-normalized, and
   max-normalized values.
 - `synthetic.expected_profile_metrics.tsv`: profile error and decile-ratio
   metrics against the truth read-centric profile.
 - `run_commands.sh`: example commands for IsoComp and RSeQC.
+
+`--simulation-mode clean` is the default for smoke tests and contains controlled
+truth cases across 1-, 2-, 3-, 4-, 5-, and 10-exon transcript structures,
+including exon skipping, retained intron, alternative TSS, and alternative TES
+isoforms. `realistic` adds platform-like CIGAR artifacts such as terminal soft
+clipping, insertions, and splice-site shifts. `stress` adds adversarial cases
+such as chimeric alignments, novel exon chains, and single-exon ambiguity. `all`
+emits clean, realistic, and stress tiers together and is the recommended setting
+for manuscript sensitivity checks.
+
+These are alignment-level synthetic reads: the BAM records are generated
+directly from transcript models and CIGAR strings. They are intended to validate
+assignment, projection, and completeness logic, not to replace FASTQ-level
+ONT/PacBio read simulation or real-data comparisons.
 
 The generator requires `pysam` to write BAM files. Running it inside an RSeQC
 environment is sufficient because RSeQC installs `pysam`.
@@ -86,10 +105,13 @@ To generate a real RSeQC version of the synthetic annotation-dependence panel,
 first create synthetic BAM/BED inputs:
 
 ```bash
-python benchmarks/generate_synthetic_data.py --out-dir benchmark_runs/article_synthetic_input --replicates 20
+python benchmarks/generate_synthetic_data.py \
+  --out-dir benchmark_runs/article_synthetic_input \
+  --replicates 20 \
+  --simulation-mode all
 ```
 
-Then run RSeQC on the three annotation sets and parse the outputs:
+Then run RSeQC on the four annotation sets and parse the outputs:
 
 ```bash
 python benchmarks/rseqc_annotation_dependence.py \

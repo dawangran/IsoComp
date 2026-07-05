@@ -37,30 +37,31 @@ Complete these items before manuscript submission:
 1. Confirm the version in `pyproject.toml` and `isocomp/__init__.py`.
 2. Run `pytest` on Python 3.10, 3.11, and 3.12 or confirm GitHub Actions passed.
 3. Run `bash scripts/run_synthetic_example.sh example_runs/synthetic_example`.
-4. Run `python benchmarks/synthetic_truth_benchmark.py --out-dir benchmark_runs/synthetic_truth --no-plots`.
-5. Build a source and wheel distribution:
+4. Run `python benchmarks/generate_synthetic_data.py --out-dir benchmark_runs/article_synthetic_input --simulation-mode all`.
+5. Run `python benchmarks/synthetic_truth_benchmark.py --out-dir benchmark_runs/synthetic_truth --no-plots`.
+6. Build a source and wheel distribution:
 
    ```bash
    python -m pip install build
    python -m build
    ```
 
-6. Create a signed or annotated git tag, for example:
+7. Create a signed or annotated git tag, for example:
 
    ```bash
    git tag -a v0.1.0 -m "IsoComp v0.1.0"
    git push origin v0.1.0
    ```
 
-7. Create a GitHub release from that tag and attach:
+8. Create a GitHub release from that tag and attach:
 
    - source archive
    - wheel or source distribution from `dist/`
    - synthetic example outputs or a compact test-data archive
 
-8. Archive the GitHub release or release archive on Zenodo, Figshare, or Software
+9. Archive the GitHub release or release archive on Zenodo, Figshare, or Software
    Heritage and record the DOI.
-9. Replace all manuscript placeholders for contact, funding, release URL, and DOI.
+10. Replace all manuscript placeholders for contact, funding, release URL, and DOI.
 
 ## Manuscript Availability Text Template
 
