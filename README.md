@@ -1,6 +1,5 @@
 # IsoComp
 
-[![CI](https://github.com/dawangran/IsoComp/actions/workflows/ci.yml/badge.svg)](https://github.com/dawangran/IsoComp/actions/workflows/ci.yml)
 
 IsoComp is a read-centric isoform completeness QC tool for long-read RNA sequencing.
 It assigns each genome-aligned read to its best-supported annotated transcript
