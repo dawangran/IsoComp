@@ -239,19 +239,6 @@ data.
 
 ## Reproducibility Assets
 
-- `benchmarks/generate_synthetic_data.py` creates sorted/indexed synthetic BAM
-  files, matched/incomplete/redundant BED12 annotations, truth labels, expected
-  profiles, and example IsoComp/RSeQC commands. Use `--simulation-mode all` for
-  manuscript checks that include clean, realistic, and stress synthetic tiers;
-  the clean tier now covers 1-, 2-, 3-, 4-, 5-, and 10-exon structures plus
-  exon skipping, retained intron, and alternative TSS/TES models.
-- `benchmarks/synthetic_truth_benchmark.py` runs IsoComp synthetic truth
-  evaluation, parameter sensitivity analysis, and RSeQC-style profile comparison.
-  Its sensitivity grid includes assignment thresholds, terminal tolerances,
-  full-length coverage thresholds, and `--min-unspliced-coverages`, the guard for
-  junctionless reads on spliced transcripts.
-- `scripts/run_synthetic_example.sh` is the recommended one-command smoke test
-  for users and reviewers.
 - `docs/software_availability.md` contains the release checklist and manuscript
   Availability text template.
 
