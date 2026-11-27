@@ -2,7 +2,7 @@
 
 ## 资料来源
 
-- 当前仓库代码、README、测试和 synthetic truth benchmark。
+- 当前仓库代码、README、单元测试和 CLI 端到端测试。
 - `CITATION.cff` 提到 associated manuscript，但版本控制中的资料没有论文 DOI、预印本或正式方法文章。
 - 本次外部检索因搜索服务返回 HTTP 403 未取得可核验论文，因此以下结论是代码级审查，不把尚未发表的方法主张当成外部验证结果。
 
@@ -141,12 +141,11 @@ is_full_length_like = unique and coverage_fraction >= 0.8
 - sample summary 直接写出 usable、duplicate、low-MAPQ、empty-alignment 和 terminal-evaluable counts。
 - 注释模型和 interval index 本身仍必须常驻内存，这是当前设计的基础成本。
 
-## 验证结果
+## 验证范围
 
-- `pytest`: 48 tests passed。
-- synthetic CLI end-to-end: passed。
-- 精简 synthetic truth benchmark：`status_accuracy=1.0`、`unique_transcript_accuracy=1.0`、`full_length_f1=1.0`。
-- synthetic benchmark 证明实现与内置真值规则一致，但场景规模较小且由相同方法假设生成，不能替代 SIRV、cap/poly(A)-anchored truth 或人工核验真实 reads。
+- `pytest` 运行当前仓库的单元测试和 CLI 端到端测试；最新通过情况以对应提交的 GitHub Actions 结果为准。
+- CLI 测试在临时目录生成微型 BED12/GTF/BAM 输入，并检查分配结果、TSV/JSON 输出、绘图和 HTML/PDF 报告。
+- 这些测试用于检查实现与预期规则是否一致，不能替代 SIRV、cap/poly(A)-anchored truth 或人工核验真实 reads。
 
 ## 优先级建议
 
