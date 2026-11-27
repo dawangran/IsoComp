@@ -21,6 +21,7 @@ long read → candidate transcripts → isoform assignment → transcript coordi
 - [Outputs and interpretation](#outputs-and-interpretation)
 - [Plots and reports](#plots-and-reports)
 - [Practical notes](#practical-notes)
+- [Citation and archived resources](#citation-and-archived-resources)
 - [Support and license](#support-and-license)
 
 ## Installation
@@ -310,6 +311,21 @@ PDF report includes summary metrics, run parameters, and QC plots for sharing.
   100,000 values and the read heatmap at 500 reads. Transcript-body arrays are
   allocated for transcripts receiving unique directional evidence; the full
   transcript heatmap can still grow with the number of represented transcripts.
+
+## Citation and archived resources
+
+Versioned software and supporting data are archived on Zenodo:
+
+| Resource | Archived version | DOI |
+| --- | --- | --- |
+| IsoComp software | v0.1.0 | [10.5281/zenodo.21206056](https://doi.org/10.5281/zenodo.21206056) |
+| Supporting data: Stereo-seq alignments and mouse transcript completeness simulations | v0.1.0 | [10.5281/zenodo.24548169](https://doi.org/10.5281/zenodo.24548169) |
+
+Please cite the software DOI when using IsoComp, and cite the data DOI separately
+when reusing the supporting data.
+
+The software DOI identifies the archived v0.1.0 release. When running a GitHub
+checkout, also report the Git commit used for the analysis.
 
 ## Support and license
 
